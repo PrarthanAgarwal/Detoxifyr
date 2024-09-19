@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Detoxifier",
+  "version": "1.0",
+  "permissions": ["activeTab", "scripting", "tabs", "storage", "alarms"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
