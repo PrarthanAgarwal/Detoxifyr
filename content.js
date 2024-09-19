@@ -27,7 +27,6 @@ function searchAndWatchVideos() {
     return;
   }
 
-  // If we're on the search page, click a video
   if (window.location.href.includes("/results?search_query=")) {
     setTimeout(() => {
       const videos = document.querySelectorAll('ytd-video-renderer a#video-title');
@@ -38,19 +37,18 @@ function searchAndWatchVideos() {
           action: "updateTaskStatus", 
           completedVideos: currentVideoCount 
         });
-        setTimeout(watchVideo, 1000); // Wait for video page to load
+        setTimeout(watchVideo, 1000);
       } else {
         console.log("No more videos found.");
       }
-    }, 1000); // Wait for search results to load
+    }, 1000);
   } else {
-    // If we're not on the search page, perform the search
     const searchBox = document.querySelector('input#search');
     if (searchBox) {
       searchBox.value = searchKeyword;
       const searchButton = document.querySelector('button#search-icon-legacy');
       searchButton.click();
-      setTimeout(searchAndWatchVideos, 1000); // Wait for search results to load
+      setTimeout(searchAndWatchVideos, 1000);
     }
   }
 }
@@ -60,14 +58,12 @@ function watchVideo() {
   if (video) {
     video.playbackRate = playbackSpeed;
     
-    // Watch for 2 minutes (adjust as needed)
+    // Watch for 2 minutes
     setTimeout(() => {
       console.log(`Watched video ${currentVideoCount} of ${totalVideoCount}`);
-      // Go back to search results
       window.history.back();
-      // Wait for page to load, then search for next video
       setTimeout(searchAndWatchVideos, 3000);
-    }, 120000); // 2 minutes
+    }, 120000);
   } else {
     console.log("Video element not found.");
     setTimeout(searchAndWatchVideos, 3000);

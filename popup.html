@@ -1,39 +1,82 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>YouTube Detoxifier</title>
-  <style>
-    body { width: 300px; padding: 10px; }
-    label, input, select { display: block; margin-bottom: 10px; }
-    #taskStatus { display: none; margin-top: 20px; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Detoxifier</title>
+    <style>
+        body {
+            width: 300px;
+            font-family: Arial, sans-serif;
+            padding: 10px;
+        }
+        input, button {
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 5px;
+        }
+        #errorMessage {
+            color: red;
+            display: none;
+            margin-bottom: 10px;
+        }
+        #taskStatus {
+            display: none;
+        }
+        #progressBarContainer {
+            width: 100%;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        #progressBar {
+            width: 0;
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 5px;
+            text-align: center;
+            line-height: 20px;
+            color: white;
+        }
+        #statusMessage {
+            text-align: center;
+            font-weight: bold;
+        }
+        .status-running {
+            color: #2196F3;
+        }
+        .status-completed {
+            color: #4CAF50;
+        }
+        .status-terminated {
+            color: #F44336;
+        }
+        .completion-message {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px;
+            text-align: center;
+            margin-top: 10px;
+            border-radius: 5px;
+        }
+    </style>
 </head>
 <body>
-  <h1>YouTube Detoxifier</h1>
-  
-  <div id="inputForm">
-    <label for="keyword">Keyword:</label>
-    <input type="text" id="keyword">
-    
-    <label for="speed">Playback Speed:</label>
-    <select id="speed">
-      <option value="1">Normal</option>
-      <option value="1.5">1.5x</option>
-      <option value="1.75">1.75x</option>
-      <option value="2">2x</option>
-    </select>
-    
-    <label for="videoCount">Number of Videos (1-10):</label>
-    <input type="number" id="videoCount" min="1" max="10" value="1">
-    
-    <button id="start">Start Detox</button>
-  </div>
-
-  <div id="taskStatus">
-    <p>Script Running</p>
-    <a href="#" id="viewDetails">View Task Details</a>
-  </div>
-
-  <script src="popup.js"></script>
+    <h2>YouTube Detoxifier</h2>
+    <div id="errorMessage"></div>
+    <div id="inputForm">
+        <input type="text" id="keyword" placeholder="Enter keyword">
+        <input type="number" id="speed" placeholder="Playback speed (0.25-2)" min="0.25" max="2" step="0.25">
+        <input type="number" id="videoCount" placeholder="Number of videos (1-100)" min="1" max="100">
+        <button id="start">Start Detox</button>
+    </div>
+    <div id="taskStatus">
+        <div id="progressBarContainer">
+            <div id="progressBar"></div>
+        </div>
+        <p id="statusMessage"></p>
+    </div>
+    <button id="viewDetails">View Task Details</button>
+    <script src="popup.js"></script>
 </body>
 </html>

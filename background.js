@@ -4,7 +4,7 @@ let taskHistory = [];
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startDetox") {
     currentTask = {
-      id: Date.now(), // Add a unique id for each task
+      id: Date.now(),
       keyword: request.keyword,
       speed: request.speed,
       videoCount: request.videoCount,
@@ -30,7 +30,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           message: "Task completed successfully!"
         });
       }
-      // Update the task in taskHistory
       const index = taskHistory.findIndex(task => task.id === currentTask.id);
       if (index !== -1) {
         taskHistory[index] = currentTask;
@@ -41,7 +40,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (currentTask) {
       currentTask.status = "terminated";
       currentTask.endTime = new Date().toISOString();
-      // Update the task in taskHistory
       const index = taskHistory.findIndex(task => task.id === currentTask.id);
       if (index !== -1) {
         taskHistory[index] = currentTask;
@@ -52,6 +50,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === "getTaskStatus") {
     sendResponse({ currentTask, taskHistory });
   }
+  return true; // Indicates that the response will be sent asynchronously
 });
 
 chrome.runtime.onInstalled.addListener(() => {
