@@ -1,6 +1,18 @@
 let currentTask = null;
 let taskHistory = [];
 
+function saveState() {
+  chrome.storage.local.set({ currentTask, taskHistory });
+}
+
+function loadState(callback) {
+  chrome.storage.local.get(['currentTask', 'taskHistory'], (result) => {
+    currentTask = result.currentTask || null;
+    taskHistory = result.taskHistory || [];
+    if (callback) callback();
+  });
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startDetox") {
     currentTask = {
@@ -13,10 +25,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       status: "running"
     };
     taskHistory.push(currentTask);
-    chrome.storage.local.set({ currentTask, taskHistory });
+    saveState();
     chrome.action.setBadgeText({ text: "▶" });
     chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" });
-  } else if (request.action === "updateTaskStatus") {
+    sendResponse({status: "started"});
+  } 
+  else if (request.action === "updateTaskStatus") {
     if (currentTask) {
       currentTask.completedVideos = request.completedVideos;
       if (request.completedVideos >= currentTask.videoCount) {
@@ -34,9 +48,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (index !== -1) {
         taskHistory[index] = currentTask;
       }
-      chrome.storage.local.set({ currentTask, taskHistory });
+      saveState();
     }
-  } else if (request.action === "terminateTask") {
+  } 
+  else if (request.action === "terminateTask") {
     if (currentTask) {
       currentTask.status = "terminated";
       currentTask.endTime = new Date().toISOString();
@@ -45,12 +60,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         taskHistory[index] = currentTask;
       }
       chrome.action.setBadgeText({ text: "" });
-      chrome.storage.local.set({ currentTask: null, taskHistory });
+      currentTask = null;
+      saveState();
+      sendResponse({status: "terminated"});
+    } else {
+      sendResponse({status: "no active task"});
     }
-  } else if (request.action === "getTaskStatus") {
-    sendResponse({ currentTask, taskHistory });
+  } 
+  else if (request.action === "getTaskStatus") {
+    loadState(() => {
+      sendResponse({ currentTask, taskHistory });
+    });
+    return true; // Indicates that the response will be sent asynchronously
   }
   return true; // Indicates that the response will be sent asynchronously
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  loadState();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -58,4 +85,25 @@ chrome.runtime.onInstalled.addListener(() => {
     taskHistory = result.taskHistory || [];
     chrome.storage.local.set({ currentTask: null, taskHistory });
   });
+});
+
+// Listen for tab updates to handle navigation events
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.url && tab.url.includes("youtube.com")) {
+    chrome.tabs.sendMessage(tabId, { action: "checkAndContinueDetox" });
+  }
+});
+
+// Handle extension icon click
+chrome.action.onClicked.addListener((tab) => {
+  if (tab.url && tab.url.includes("youtube.com")) {
+    chrome.tabs.sendMessage(tab.id, { action: "toggleDetox" });
+  } else {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icon.png",
+      title: "YouTube Detoxifier",
+      message: "Please navigate to YouTube to use this extension."
+    });
+  }
 });

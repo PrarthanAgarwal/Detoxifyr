@@ -4,6 +4,7 @@ let currentVideoCount = 0;
 let totalVideoCount = 0;
 let playbackSpeed = 1;
 let searchKeyword = '';
+let observer;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startDetox") {
@@ -13,8 +14,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     playbackSpeed = speed;
     totalVideoCount = videoCount;
     currentVideoCount = 0;
-    searchAndWatchVideos();
+    
+    // Respond immediately
+    sendResponse({status: "started"});
+    
+    // Start the process asynchronously
+    setTimeout(searchAndWatchVideos, 0);
   }
+  return true;
 });
 
 function searchAndWatchVideos() {
@@ -27,45 +34,96 @@ function searchAndWatchVideos() {
     return;
   }
 
-  if (window.location.href.includes("/results?search_query=")) {
-    setTimeout(() => {
-      const videos = document.querySelectorAll('ytd-video-renderer a#video-title');
-      if (videos.length > currentVideoCount) {
-        videos[currentVideoCount].click();
-        currentVideoCount++;
-        chrome.runtime.sendMessage({ 
-          action: "updateTaskStatus", 
-          completedVideos: currentVideoCount 
-        });
-        setTimeout(watchVideo, 1000);
-      } else {
-        console.log("No more videos found.");
-      }
-    }, 1000);
+  performSearch();
+}
+
+function performSearch() {
+  console.log("Performing search for:", searchKeyword);
+  
+  // Use the YouTube search API directly
+  const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchKeyword)}`;
+  
+  // Navigate to the search results page
+  window.location.href = searchUrl;
+
+  // Wait for the navigation to complete before proceeding
+  waitForNavigation(() => {
+    console.log("Search results page loaded");
+    waitForElement('ytd-video-renderer a#video-title', clickVideoResult);
+  });
+}
+
+function clickVideoResult() {
+  const videos = document.querySelectorAll('ytd-video-renderer a#video-title');
+  if (videos.length > currentVideoCount) {
+    videos[currentVideoCount].click();
+    currentVideoCount++;
+    chrome.runtime.sendMessage({ 
+      action: "updateTaskStatus", 
+      completedVideos: currentVideoCount 
+    });
+    waitForNavigation(watchVideo);
   } else {
-    const searchBox = document.querySelector('input#search');
-    if (searchBox) {
-      searchBox.value = searchKeyword;
-      const searchButton = document.querySelector('button#search-icon-legacy');
-      searchButton.click();
-      setTimeout(searchAndWatchVideos, 1000);
-    }
+    console.log("No more videos found.");
+    retryOperation(searchAndWatchVideos);
   }
 }
 
 function watchVideo() {
-  const video = document.querySelector('video');
-  if (video) {
+  waitForElement('video', (video) => {
     video.playbackRate = playbackSpeed;
     
     // Watch for 2 minutes
     setTimeout(() => {
       console.log(`Watched video ${currentVideoCount} of ${totalVideoCount}`);
       window.history.back();
-      setTimeout(searchAndWatchVideos, 3000);
+      waitForNavigation(searchAndWatchVideos);
     }, 120000);
+  });
+}
+
+function waitForElement(selector, callback) {
+  const element = document.querySelector(selector);
+  if (element) {
+    callback(element);
   } else {
-    console.log("Video element not found.");
-    setTimeout(searchAndWatchVideos, 3000);
+    const observer = new MutationObserver((mutations, obs) => {
+      const element = document.querySelector(selector);
+      if (element) {
+        obs.disconnect();
+        callback(element);
+      }
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
   }
+}
+
+function waitForNavigation(callback) {
+  if (observer) {
+    observer.disconnect();
+  }
+  observer = new MutationObserver((mutations, obs) => {
+    if (document.readyState === 'complete') {
+      obs.disconnect();
+      callback();
+    }
+  });
+  observer.observe(document, {attributes: false, childList: true, characterData: false, subtree: true});
+}
+
+function retryOperation(operation, maxRetries = 3, delay = 1000) {
+  let retries = 0;
+  const retry = () => {
+    if (retries < maxRetries) {
+      retries++;
+      console.log(`Retrying operation (attempt ${retries})`);
+      setTimeout(operation, delay);
+    } else {
+      console.error(`Operation failed after ${maxRetries} attempts`);
+    }
+  };
+  retry();
 }

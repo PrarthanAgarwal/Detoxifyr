@@ -1,5 +1,3 @@
-// Improved popup.js
-
 document.addEventListener('DOMContentLoaded', () => {
   const startButton = document.getElementById('start');
   const inputForm = document.getElementById('inputForm');
@@ -8,11 +6,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressBar = document.getElementById('progressBar');
   const statusMessage = document.getElementById('statusMessage');
 
+  let statusUpdateInterval;
+
   // Fetch and display current task status on popup open
   updateTaskStatus();
 
   // Set up periodic status updates
-  const statusUpdateInterval = setInterval(updateTaskStatus, 5000);
+  startStatusUpdates();
 
   startButton.addEventListener('click', () => {
     const keyword = document.getElementById('keyword').value.trim();
@@ -28,11 +28,22 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.tabs.create({ url: "taskdetails.html" });
   });
 
-  // Clean up interval on popup close
-  window.addEventListener('unload', () => {
-    clearInterval(statusUpdateInterval);
-  });
+ // Use visibilitychange event instead of unload
+ document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    updateTaskStatus();
+  }
 });
+});
+
+function startStatusUpdates() {
+  updateTaskStatus();
+  statusUpdateInterval = setInterval(updateTaskStatus, 5000);
+  }
+
+function stopStatusUpdates() {
+  clearInterval(statusUpdateInterval);
+  }
 
 function validateInputs(keyword, speed, videoCount) {
   let isValid = true;
@@ -85,14 +96,19 @@ function startDetoxProcess(keyword, speed, videoCount) {
             keyword, 
             speed, 
             videoCount 
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              showError("Error starting detox: " + chrome.runtime.lastError.message);
+            } else {
+              chrome.runtime.sendMessage({ 
+                action: "startDetox", 
+                keyword, 
+                speed, 
+                videoCount 
+              });
+              showTaskStatus();
+            }
           });
-          chrome.runtime.sendMessage({ 
-            action: "startDetox", 
-            keyword, 
-            speed, 
-            videoCount 
-          });
-          showTaskStatus();
         }
       });
     } else {
@@ -117,6 +133,8 @@ function updateTaskStatus() {
       
       statusMessage.textContent = `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`;
       statusMessage.className = `status-${status}`;
+
+      showTaskStatus();
 
       if (status === "completed") {
         showCompletionMessage();
