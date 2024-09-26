@@ -1,3 +1,18 @@
+function sanitizeInput(input) {
+  return input.replace(/[&<>"']/g, function (match) {
+    return {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[match];
+  });
+}
+
+let statusUpdateInterval;
+let completionMessageShown = false;
+
 document.addEventListener('DOMContentLoaded', () => {
   const startButton = document.getElementById('start');
   const inputForm = document.getElementById('inputForm');
@@ -6,8 +21,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressBar = document.getElementById('progressBar');
   const statusMessage = document.getElementById('statusMessage');
 
-  let statusUpdateInterval;
-
   // Fetch and display current task status on popup open
   updateTaskStatus();
 
@@ -15,9 +28,9 @@ document.addEventListener('DOMContentLoaded', () => {
   startStatusUpdates();
 
   startButton.addEventListener('click', () => {
-    const keyword = document.getElementById('keyword').value.trim();
-    const speed = parseFloat(document.getElementById('speed').value);
-    const videoCount = parseInt(document.getElementById('videoCount').value);
+    const keyword = sanitizeInput(document.getElementById('keyword').value.trim());
+    const speed = parseFloat(sanitizeInput(document.getElementById('speed').value));
+    const videoCount = parseInt(sanitizeInput(document.getElementById('videoCount').value));
 
     if (validateInputs(keyword, speed, videoCount)) {
       startDetoxProcess(keyword, speed, videoCount);
@@ -26,24 +39,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
   viewDetails.addEventListener('click', () => {
     chrome.tabs.create({ url: "taskdetails.html" });
+    // Reset the interface only when viewing task details
+    resetInterface();
   });
 
- // Use visibilitychange event instead of unload
- document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    updateTaskStatus();
-  }
-});
+  // Use visibilitychange event instead of unload
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopStatusUpdates();
+    } else {
+      startStatusUpdates();
+    }
+  });
 });
 
 function startStatusUpdates() {
   updateTaskStatus();
-  statusUpdateInterval = setInterval(updateTaskStatus, 5000);
+  if (!statusUpdateInterval) {
+    statusUpdateInterval = setInterval(updateTaskStatus, 5000);
   }
+}
 
 function stopStatusUpdates() {
   clearInterval(statusUpdateInterval);
-  }
+  statusUpdateInterval = null;
+}
 
 function validateInputs(keyword, speed, videoCount) {
   let isValid = true;
@@ -102,9 +122,9 @@ function startDetoxProcess(keyword, speed, videoCount) {
             } else {
               chrome.runtime.sendMessage({ 
                 action: "startDetox", 
-                keyword, 
-                speed, 
-                videoCount 
+                keyword: sanitizeInput(keyword), 
+                speed: sanitizeInput(speed.toString()), 
+                videoCount: sanitizeInput(videoCount.toString()) 
               });
               showTaskStatus();
             }
@@ -118,31 +138,30 @@ function startDetoxProcess(keyword, speed, videoCount) {
 }
 
 function showTaskStatus() {
-  inputForm.style.display = "none";
-  taskStatus.style.display = "block";
+  document.getElementById('inputForm').style.display = "none";
+  document.getElementById('taskStatus').style.display = "block";
 }
 
 function updateTaskStatus() {
   chrome.runtime.sendMessage({ action: "getTaskStatus" }, (response) => {
-    if (response.currentTask) {
+    if (response && response.currentTask) {
       const { completedVideos, videoCount, status } = response.currentTask;
       const progress = (completedVideos / videoCount) * 100;
       
-      progressBar.style.width = `${progress}%`;
-      progressBar.textContent = `${Math.round(progress)}%`;
+      document.getElementById('progressBar').style.width = `${progress}%`;
+      document.getElementById('progressBar').textContent = `${Math.round(progress)}%`;
       
-      statusMessage.textContent = `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`;
-      statusMessage.className = `status-${status}`;
+      document.getElementById('statusMessage').textContent = `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`;
+      document.getElementById('statusMessage').className = `status-${status}`;
 
       showTaskStatus();
 
-      if (status === "completed") {
+      if (status === "completed" && !completionMessageShown) {
         showCompletionMessage();
+        completionMessageShown = true;
       }
-    } else {
-      taskStatus.style.display = "none";
-      inputForm.style.display = "block";
     }
+    // Removed the else block that was resetting the interface
   });
 }
 
@@ -150,11 +169,16 @@ function showCompletionMessage() {
   const completionMessage = document.createElement('div');
   completionMessage.textContent = "Detox process completed!";
   completionMessage.className = "completion-message";
-  taskStatus.appendChild(completionMessage);
-  
-  setTimeout(() => {
-    completionMessage.remove();
-    taskStatus.style.display = "none";
-    inputForm.style.display = "block";
-  }, 5000);
+  document.getElementById('taskStatus').appendChild(completionMessage);
+}
+
+function resetInterface() {
+  document.getElementById('taskStatus').style.display = "none";
+  document.getElementById('inputForm').style.display = "block";
+  // Clear progress bar and status message
+  document.getElementById('progressBar').style.width = "0%";
+  document.getElementById('progressBar').textContent = "";
+  document.getElementById('statusMessage').textContent = "";
+  document.getElementById('statusMessage').className = "";
+  completionMessageShown = false;
 }

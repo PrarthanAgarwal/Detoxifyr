@@ -36,6 +36,21 @@ function updateTaskDetails() {
         <td class="status-${task.status}">${task.status}</td>
       `;
     });
+
+    // Reset completed tasks
+    if (response.currentTask && response.currentTask.status === "completed") {
+      resetCompletedTask();
+    }
+  });
+}
+
+function resetCompletedTask() {
+  chrome.runtime.sendMessage({ action: "resetTask" }, (response) => {
+    if (response && response.status === "reset") {
+      console.log("Task reset successfully");
+    } else {
+      console.error("Failed to reset task");
+    }
   });
 }
 
