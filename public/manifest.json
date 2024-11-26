@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "key": "${VITE_EXTENSION_KEY}",
+  "name": "Detoxifyr",
+  "version": "1.0.0",
+  "description": "A healthier YouTube viewing experience",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "webNavigation",
+    "identity",
+    "identity.email"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "https://accounts.google.com/o/oauth2/*"
+  ],
+  "oauth2": {
+    "client_id": "${VITE_GOOGLE_CLIENT_ID}",
+    "scopes": [
+      "https://www.googleapis.com/auth/youtube.readonly",
+      "email"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "index.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval'; child-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["*://*.youtube.com/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+} 
