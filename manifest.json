@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1paAHiizuw6KWRX9mFaRKMvN7y7NB3JerYx1LxIGAdRDR4CLwwA/pWpk+6k4fj35BWU8X4xYyAlbQ4cp40OfyvapxP3J6sXC1OcvVGyCEjPJlo3g0AbaoSoZAHXGhuVe5r7lEM2ODkJWY6CTs2GXnyK0JZXb4wJeLHctMa3yjX8KWGB/asqa0jCbGL6H/a3j9hVoiQozAO4mA4ICocAACfEdpHGlL29d1KnDQIwapy0b+iVxBB35mQg2iqg4aaVgnyA0Fy65IbhJJjlOyfUJlLMfQ1x4AtWe/zyGPkG5Y/zF+IU6VjIvYJba0CEaw7ttxSDt1GBU+m8ctDSULFuSRwIDAQAB",
+  "name": "Detoxifyr 3.0",
+  "version": "1.0.0",
+  "description": "Personalize and detoxify your YouTube feed",
+  "permissions": [
+    "storage",
+    "cookies",
+    "tabs",
+    "identity",
+    "identity.email"
+  ],
+  "host_permissions": [
+    "https://*.youtube.com/*",
+    "https://www.googleapis.com/*",
+    "https://accounts.google.com/*"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "Detoxifyr"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "oauth2": {
+    "client_id": "84661743876-qu25ljp5l5iv9n42g49evgi42mehc7b9.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/youtube.readonly",
+      "https://www.googleapis.com/auth/youtube.force-ssl"
+    ]
+  }
+}
