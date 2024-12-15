@@ -1,41 +1,23 @@
 import { YouTubeApiService } from './api/youtubeApiService';
 import { CacheService } from './cacheService';
-import { isValidVideoId, isValidChannelId, validateVideoDetails, validateChannelInfo } from '../utils/validationUtils';
-import type { 
+import { isValidVideoId, isValidChannelId } from '../utils/validationUtils';
+import { 
     VideoDetails, 
     ChannelInfo, 
-    SearchResponse
+    SearchResponse,
+    ThumbnailInfo
 } from '../types/youtube';
 import { 
-    YouTubeVideo, 
-    // @ts-ignore - Used implicitly through YouTubeSearchResponse type
-    YouTubeSearchResult,
-    YouTubeChannel
+    Video,
+    Channel,
+    SearchOptions
 } from '../types/youtube.types';
-
-// Define search parameters interface extending the base one
-export interface EnhancedSearchParams {
-    query: string;
-    maxResults?: number;
-    pageToken?: string;
-    order?: 'date' | 'rating' | 'relevance' | 'title' | 'viewCount';
-    safeSearch?: 'none' | 'moderate' | 'strict';
-}
-
-// Define constants
-const DEFAULT_SEARCH_CONFIG = {
-    maxResults: 25,
-    safeSearch: 'moderate' as const,
-    order: 'relevance' as const
-} as const;
 
 export class YouTubeService {
     private static instance: YouTubeService;
     private apiService: YouTubeApiService;
     private cache: CacheService;
-    private readonly MAX_RETRIES = 3;
-    private readonly RETRY_DELAY = 1000;
-    private readonly BATCH_SIZE = 50;
+    private readonly CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
     private constructor() {
         this.apiService = YouTubeApiService.getInstance();
@@ -49,7 +31,7 @@ export class YouTubeService {
         return YouTubeService.instance;
     }
 
-    public async searchVideos(params: EnhancedSearchParams): Promise<SearchResponse> {
+    public async searchVideos(params: { query: string } & Partial<SearchOptions>): Promise<SearchResponse> {
         try {
             const optimizedQuery = this.buildOptimizedQuery(params.query);
             
@@ -57,22 +39,9 @@ export class YouTubeService {
                 console.warn('Empty query after optimization');
                 return this.createEmptySearchResponse();
             }
-            
-            const searchConfig = {
-                maxResults: params.maxResults ?? DEFAULT_SEARCH_CONFIG.maxResults,
-                safeSearch: params.safeSearch ?? DEFAULT_SEARCH_CONFIG.safeSearch,
-                order: params.order ?? DEFAULT_SEARCH_CONFIG.order,
-                pageToken: params.pageToken
-            };
 
             // Step 1: Initial search
-            const searchResponse = await this.apiService.searchVideos(
-                optimizedQuery, 
-                searchConfig.maxResults,
-                searchConfig.safeSearch,
-                searchConfig.order,
-                searchConfig.pageToken
-            );
+            const searchResponse = await this.apiService.searchVideos(optimizedQuery, params);
 
             if (!searchResponse?.items?.length) {
                 console.warn('No search results found');
@@ -93,7 +62,7 @@ export class YouTubeService {
             }
 
             // Step 3: Get unique IDs
-            const videoIds = [...new Set(validItems.map(item => item.id.videoId))];
+            const videoIds = [...new Set(validItems.map(item => item.id.videoId!))];
             const channelIds = [...new Set(validItems.map(item => item.snippet.channelId))];
 
             // Step 4: Fetch details in parallel with caching
@@ -102,23 +71,16 @@ export class YouTubeService {
                 this.fetchChannelDetailsWithRetry(channelIds)
             ]);
 
-            if (!videos.length) {
-                console.warn('No valid videos retrieved');
-                return this.createEmptySearchResponse();
-            }
-
-            if (!channels.length) {
-                console.warn('No valid channel data retrieved');
+            if (!videos.length || !channels.length) {
+                console.warn('No valid videos or channels retrieved');
                 return this.createEmptySearchResponse();
             }
 
             // Step 5: Create channel map and match videos
             const channelMap = new Map(channels.map(channel => [channel.id, channel]));
-            const validVideos = videos.filter(video => 
-                video?.id && 
-                video?.channelId && 
-                channelMap.has(video.channelId)
-            );
+            const validVideos = videos
+                .filter(video => video?.snippet?.channelId && channelMap.has(video.snippet.channelId))
+                .map(video => this.formatVideoDetails(video));
 
             if (!validVideos.length) {
                 console.warn('No videos with valid channel data');
@@ -139,155 +101,6 @@ export class YouTubeService {
         }
     }
 
-    private buildOptimizedQuery(query: string): string {
-        return query.trim()
-            .replace(/\s+/g, ' ') // normalize spaces
-            .replace(/[^\w\s-]/g, ''); // remove special characters except hyphens
-    }
-
-    private createEmptySearchResponse(): SearchResponse {
-        return {
-            items: [],
-            nextPageToken: undefined,
-            prevPageToken: undefined,
-            totalResults: 0
-        };
-    }
-
-    private async fetchChannelDetailsWithRetry(channelIds: string[], attempt = 0): Promise<ChannelInfo[]> {
-        try {
-            const allChannels: ChannelInfo[] = [];
-            const batches: string[][] = [];
-            
-            // Create batches of channel IDs
-            for (let i = 0; i < channelIds.length; i += this.BATCH_SIZE) {
-                batches.push(channelIds.slice(i, i + this.BATCH_SIZE));
-            }
-
-            // Process each batch
-            for (const batch of batches) {
-                try {
-                    // Get channels in parallel
-                    const channelPromises = batch.map(id => this.getChannelInfo(id));
-                    const channelResults = await Promise.all(channelPromises);
-                    
-                    // Filter out null results
-                    const validChannels = channelResults.filter((channel): channel is ChannelInfo => 
-                        channel !== null
-                    );
-                    
-                    allChannels.push(...validChannels);
-
-                    // Add delay between batches
-                    if (batches.indexOf(batch) < batches.length - 1) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
-                } catch (error) {
-                    console.warn(`Failed to fetch batch of channel details:`, error);
-                    // Continue with other batches
-                }
-            }
-
-            if (allChannels.length === 0) {
-                throw new Error('No channel data could be retrieved');
-            }
-
-            return allChannels;
-        } catch (error) {
-            if (attempt < this.MAX_RETRIES) {
-                const delay = this.RETRY_DELAY * Math.pow(2, attempt);
-                console.warn(`Retrying channel fetch after ${delay}ms. Attempt ${attempt + 1}/${this.MAX_RETRIES}`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                return this.fetchChannelDetailsWithRetry(channelIds, attempt + 1);
-            }
-            console.error('Failed to fetch channel details after all retries:', error);
-            return [];
-        }
-    }
-
-    private async fetchVideoDetailsWithRetry(videoIds: string[], attempt = 0): Promise<VideoDetails[]> {
-        try {
-            const allVideos: VideoDetails[] = [];
-            const batches: string[][] = [];
-            
-            // Create batches of video IDs
-            for (let i = 0; i < videoIds.length; i += this.BATCH_SIZE) {
-                batches.push(videoIds.slice(i, i + this.BATCH_SIZE));
-            }
-
-            // Process each batch with retries
-            for (const batch of batches) {
-                try {
-                    // First try to get from cache
-                    const cachedVideos = batch
-                        .map(id => this.cache.get<VideoDetails>(`video:${id}`))
-                        .filter(Boolean) as VideoDetails[];
-                    
-                    allVideos.push(...cachedVideos);
-                    
-                    // Get remaining videos from API
-                    const remainingIds = batch.filter(
-                        id => !cachedVideos.some(v => v.id === id)
-                    );
-                    
-                    if (remainingIds.length > 0) {
-                        const response = await this.apiService.getVideoDetails(remainingIds.join(','));
-                        
-                        if (response?.items?.length) {
-                            const videoDetails = response.items.map(video => ({
-                                id: video.id,
-                                title: video.snippet?.title || '',
-                                description: video.snippet?.description || '',
-                                publishedAt: video.snippet?.publishedAt || '',
-                                thumbnails: video.snippet?.thumbnails || {
-                                    default: { url: '', width: 120, height: 90 },
-                                    medium: { url: '', width: 320, height: 180 },
-                                    high: { url: '', width: 480, height: 360 }
-                                },
-                                channelId: video.snippet?.channelId || '',
-                                channelTitle: video.snippet?.channelTitle || '',
-                                duration: video.contentDetails?.duration || 'PT0S',
-                                viewCount: parseInt(video.statistics?.viewCount || '0', 10),
-                                likeCount: parseInt(video.statistics?.likeCount || '0', 10),
-                                commentCount: parseInt(video.statistics?.commentCount || '0', 10),
-                                defaultLanguage: video.snippet?.defaultLanguage,
-                                tags: video.snippet?.tags || [],
-                                categoryId: video.snippet?.categoryId || '0',
-                                hasCaptions: video.contentDetails?.caption === 'true'
-                            }));
-
-                            // Cache the results
-                            videoDetails.forEach(video => {
-                                this.cache.set(`video:${video.id}`, video, 15 * 60 * 1000); // 15 minutes
-                            });
-
-                            allVideos.push(...videoDetails);
-                        }
-                    }
-
-                    // Add delay between batches
-                    if (batches.indexOf(batch) < batches.length - 1) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
-                } catch (error) {
-                    console.warn(`Failed to fetch batch of video details:`, error);
-                    // Continue with other batches
-                }
-            }
-
-            return allVideos;
-        } catch (error) {
-            if (attempt < this.MAX_RETRIES) {
-                const delay = this.RETRY_DELAY * Math.pow(2, attempt);
-                console.warn(`Retrying video fetch after ${delay}ms. Attempt ${attempt + 1}/${this.MAX_RETRIES}`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                return this.fetchVideoDetailsWithRetry(videoIds, attempt + 1);
-            }
-            console.error('Failed to fetch video details after all retries:', error);
-            return [];
-        }
-    }
-
     public async getVideoDetails(videoId: string): Promise<VideoDetails> {
         if (!isValidVideoId(videoId)) {
             console.warn(`Invalid video ID format: ${videoId}`);
@@ -302,21 +115,13 @@ export class YouTubeService {
         try {
             const response = await this.apiService.getVideoDetails(videoId);
             
-            // Handle empty response more gracefully
             if (!response.items || response.items.length === 0) {
                 console.warn(`No data available for video: ${videoId}`);
                 return this.createEmptyVideoDetails(videoId);
             }
 
-            const video = response.items[0];
-            const validation = validateVideoDetails(video);
-            if (!validation.isValid) {
-                console.warn(`Video data validation failed for ${videoId}: ${validation.errors.join(', ')}`);
-                return this.createEmptyVideoDetails(videoId);
-            }
-
-            const videoDetails = this.formatVideoDetails(video);
-            this.cache.set(cacheKey, videoDetails);
+            const videoDetails = this.formatVideoDetails(response.items[0]);
+            this.cache.set(cacheKey, videoDetails, this.CACHE_TTL);
             return videoDetails;
         } catch (error) {
             console.error(`Error fetching video details for ${videoId}:`, error);
@@ -325,63 +130,89 @@ export class YouTubeService {
     }
 
     public async getChannelInfo(channelId: string): Promise<ChannelInfo | null> {
-        try {
-            // Check cache first
-            const cacheKey = `channel:${channelId}`;
-            const cachedData = this.cache.get<ChannelInfo>(cacheKey);
-            if (cachedData) {
-                return cachedData;
-            }
+        if (!isValidChannelId(channelId)) {
+            console.warn(`Invalid channel ID format: ${channelId}`);
+            return null;
+        }
 
-            // Fetch from API
+        const cacheKey = `channel:${channelId}`;
+        const cachedData = this.cache.get<ChannelInfo>(cacheKey);
+        
+        if (cachedData) return cachedData;
+
+        try {
             const response = await this.apiService.getChannelInfo(channelId);
             
-            if (!response?.items?.length) {
-                console.warn(`No data found for channel: ${channelId}`);
+            if (!response.items || response.items.length === 0) {
+                console.warn(`No data available for channel: ${channelId}`);
                 return null;
             }
 
-            const channel = response.items[0];
-            const channelInfo: ChannelInfo = {
-                id: channel.id,
-                title: channel.snippet?.title || '',
-                description: channel.snippet?.description || '',
-                subscriberCount: parseInt(channel.statistics?.subscriberCount || '0', 10),
-                videoCount: parseInt(channel.statistics?.videoCount || '0', 10),
-                totalViews: parseInt(channel.statistics?.viewCount || '0', 10),
-                createdAt: channel.snippet?.publishedAt || new Date().toISOString(),
-                thumbnails: channel.snippet?.thumbnails || {
-                    default: { url: '', width: 120, height: 90 },
-                    medium: { url: '', width: 320, height: 180 },
-                    high: { url: '', width: 480, height: 360 }
-                },
-                recentUploads: []
-            };
-
-            // Cache the result
-            this.cache.set(cacheKey, channelInfo, 30 * 60 * 1000); // 30 minutes
+            const channelInfo = this.formatChannelInfo(response.items[0]);
+            this.cache.set(cacheKey, channelInfo, this.CACHE_TTL);
             return channelInfo;
-
         } catch (error) {
-            console.error(`Failed to fetch channel info for ${channelId}:`, error);
+            console.error(`Error fetching channel info for ${channelId}:`, error);
             return null;
         }
     }
 
-    private formatVideoDetails(video: YouTubeVideo): VideoDetails {
-        if (!video || !video.snippet) {
+    private async fetchVideoDetailsWithRetry(videoIds: string[]): Promise<Video[]> {
+        try {
+            const response = await this.apiService.getVideoDetails(videoIds);
+            return response.items || [];
+        } catch (error) {
+            console.error('Error fetching video details:', error);
+            return [];
+        }
+    }
+
+    private async fetchChannelDetailsWithRetry(channelIds: string[]): Promise<Channel[]> {
+        try {
+            const response = await this.apiService.getChannelInfo(channelIds);
+            return response.items || [];
+        } catch (error) {
+            console.error('Error fetching channel details:', error);
+            return [];
+        }
+    }
+
+    private buildOptimizedQuery(query: string): string {
+        return query.trim()
+            .replace(/\s+/g, ' ')
+            .replace(/[^\w\s-]/g, '');
+    }
+
+    private createEmptySearchResponse(): SearchResponse {
+        return {
+            items: [],
+            nextPageToken: undefined,
+            prevPageToken: undefined,
+            totalResults: 0
+        };
+    }
+
+    private formatVideoDetails(video: Video): VideoDetails {
+        if (!video?.snippet) {
             throw new Error('Invalid video data format');
         }
+
+        const formatThumbnail = (thumb?: { url: string; width: number; height: number }): ThumbnailInfo => ({
+            url: thumb?.url || '',
+            width: thumb?.width || 0,
+            height: thumb?.height || 0
+        });
 
         return {
             id: video.id,
             title: video.snippet.title || '',
             description: video.snippet.description || '',
             publishedAt: video.snippet.publishedAt || new Date().toISOString(),
-            thumbnails: video.snippet.thumbnails || {
-                default: { url: '', width: 120, height: 90 },
-                medium: { url: '', width: 320, height: 180 },
-                high: { url: '', width: 480, height: 360 }
+            thumbnails: {
+                default: formatThumbnail(video.snippet.thumbnails.default),
+                medium: formatThumbnail(video.snippet.thumbnails.medium),
+                high: formatThumbnail(video.snippet.thumbnails.high),
+                maxres: video.snippet.thumbnails.maxres ? formatThumbnail(video.snippet.thumbnails.maxres) : undefined
             },
             channelId: video.snippet.channelId || '',
             channelTitle: video.snippet.channelTitle || '',
@@ -390,16 +221,26 @@ export class YouTubeService {
             likeCount: parseInt(video.statistics?.likeCount || '0', 10),
             commentCount: parseInt(video.statistics?.commentCount || '0', 10),
             defaultLanguage: video.snippet.defaultLanguage,
-            tags: video.snippet.tags,
+            tags: video.snippet.tags || [],
             categoryId: video.snippet.categoryId,
-            hasCaptions: video.contentDetails?.caption === 'true'
+            hasCaptions: video.contentDetails?.caption === 'true',
+            contentDetails: {
+                audioQuality: video.contentDetails?.audioQuality
+            },
+            regionRestriction: video.contentDetails?.regionRestriction
         };
     }
 
-    private formatChannelInfo(channel: YouTubeChannel): ChannelInfo {
-        if (!channel || !channel.snippet) {
+    private formatChannelInfo(channel: Channel): ChannelInfo {
+        if (!channel?.snippet) {
             throw new Error('Invalid channel data format');
         }
+
+        const formatThumbnail = (thumb?: { url: string; width: number; height: number }): ThumbnailInfo => ({
+            url: thumb?.url || '',
+            width: thumb?.width || 0,
+            height: thumb?.height || 0
+        });
 
         return {
             id: channel.id,
@@ -407,14 +248,15 @@ export class YouTubeService {
             description: channel.snippet.description || '',
             subscriberCount: parseInt(channel.statistics?.subscriberCount || '0', 10),
             videoCount: parseInt(channel.statistics?.videoCount || '0', 10),
-            thumbnails: channel.snippet.thumbnails || {
-                default: { url: '', width: 120, height: 90 },
-                medium: { url: '', width: 320, height: 180 },
-                high: { url: '', width: 480, height: 360 }
+            thumbnails: {
+                default: formatThumbnail(channel.snippet.thumbnails.default),
+                medium: formatThumbnail(channel.snippet.thumbnails.medium),
+                high: formatThumbnail(channel.snippet.thumbnails.high),
+                maxres: channel.snippet.thumbnails.maxres ? formatThumbnail(channel.snippet.thumbnails.maxres) : undefined
             },
             totalViews: parseInt(channel.statistics?.viewCount || '0', 10),
             createdAt: channel.snippet.publishedAt || new Date().toISOString(),
-            recentUploads: [] // We'll handle recent uploads separately if needed
+            recentUploads: []
         };
     }
 
@@ -438,25 +280,10 @@ export class YouTubeService {
             defaultLanguage: undefined,
             tags: [],
             categoryId: '0',
-            hasCaptions: false
-        };
-    }
-
-    private createEmptyChannelInfo(channelId: string): ChannelInfo {
-        return {
-            id: channelId,
-            title: 'Unavailable Channel',
-            description: '',
-            subscriberCount: 0,
-            videoCount: 0,
-            thumbnails: {
-                default: { url: '', width: 120, height: 90 },
-                medium: { url: '', width: 320, height: 180 },
-                high: { url: '', width: 480, height: 360 }
-            },
-            totalViews: 0,
-            createdAt: new Date().toISOString(),
-            recentUploads: []
+            hasCaptions: false,
+            contentDetails: {
+                audioQuality: undefined
+            }
         };
     }
 }

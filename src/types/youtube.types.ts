@@ -1,79 +1,140 @@
-export interface YouTubeVideoSnippet {
+export interface PageInfo {
+    totalResults: number;
+    resultsPerPage: number;
+}
+
+export interface Thumbnail {
+    url: string;
+    width: number;
+    height: number;
+}
+
+export interface Thumbnails {
+    default?: Thumbnail;
+    medium?: Thumbnail;
+    high?: Thumbnail;
+    standard?: Thumbnail;
+    maxres?: Thumbnail;
+}
+
+export interface ResourceId {
+    kind: string;
+    videoId?: string;
+    channelId?: string;
+    playlistId?: string;
+}
+
+export interface SearchResultSnippet {
     publishedAt: string;
     channelId: string;
     title: string;
     description: string;
-    thumbnails: {
-        default: YouTubeThumbnail;
-        medium: YouTubeThumbnail;
-        high: YouTubeThumbnail;
-        standard?: YouTubeThumbnail;
-        maxres?: YouTubeThumbnail;
-    };
+    thumbnails: Thumbnails;
     channelTitle: string;
+    liveBroadcastContent?: string;
+    publishTime?: string;
+}
+
+export interface SearchResult {
+    kind: string;
+    etag: string;
+    id: ResourceId;
+    snippet: SearchResultSnippet;
+}
+
+export interface YouTubeSearchResponse {
+    kind: string;
+    etag: string;
+    nextPageToken?: string;
+    prevPageToken?: string;
+    pageInfo: PageInfo;
+    items: SearchResult[];
+}
+
+export interface ContentDetails {
+    duration: string;
+    dimension: string;
+    definition: string;
+    caption: string;
+    licensedContent: boolean;
+    audioQuality?: string;
+    regionRestriction?: {
+        allowed?: string[];
+        blocked?: string[];
+    };
+    contentRating?: {
+        [key: string]: string;
+    };
+}
+
+export interface Statistics {
+    viewCount?: string;
+    likeCount?: string;
+    dislikeCount?: string;
+    favoriteCount?: string;
+    commentCount?: string;
+    subscriberCount?: string;
+    videoCount?: string;
+}
+
+export interface VideoStatus {
+    uploadStatus: string;
+    privacyStatus: string;
+    license: string;
+    embeddable: boolean;
+    publicStatsViewable: boolean;
+}
+
+export interface TopicDetails {
+    topicIds?: string[];
+    relevantTopicIds?: string[];
+    topicCategories?: string[];
+}
+
+export interface VideoSnippet extends SearchResultSnippet {
     tags?: string[];
     categoryId: string;
     defaultLanguage?: string;
     defaultAudioLanguage?: string;
 }
 
-export interface YouTubeThumbnail {
-    url: string;
-    width: number;
-    height: number;
-}
-
-export interface YouTubeVideoStatistics {
-    viewCount: string;
-    likeCount: string;
-    dislikeCount?: string;
-    favoriteCount: string;
-    commentCount: string;
-}
-
-export interface YouTubeVideoContentDetails {
-    duration: string;
-    dimension: string;
-    definition: string;
-    caption: string;
-    licensedContent: boolean;
-    projection: string;
-    contentRating?: {
-        ytRating?: string;
-    };
-}
-
-export interface YouTubeVideo {
+export interface Video {
     kind: string;
     etag: string;
     id: string;
-    snippet: YouTubeVideoSnippet;
-    contentDetails: YouTubeVideoContentDetails;
-    statistics: YouTubeVideoStatistics;
+    snippet: VideoSnippet;
+    contentDetails: ContentDetails;
+    statistics: Statistics;
+    status?: VideoStatus;
+    topicDetails?: TopicDetails;
 }
 
-export interface YouTubeSearchResultId {
-    kind: string;
-    videoId: string;
-}
-
-export interface YouTubeSearchResult {
+export interface YouTubeVideoResponse {
     kind: string;
     etag: string;
-    id: YouTubeSearchResultId;
-    snippet: YouTubeVideoSnippet;
+    items: Video[];
+    pageInfo: PageInfo;
 }
 
-export interface YouTubeChannelSnippet {
+export interface ChannelBrandingSettings {
+    channel: {
+        title: string;
+        description: string;
+        keywords: string;
+        defaultTab: string;
+        defaultLanguage?: string;
+    };
+    image?: {
+        bannerExternalUrl: string;
+    };
+}
+
+export interface ChannelSnippet {
     title: string;
     description: string;
     customUrl?: string;
     publishedAt: string;
-    thumbnails: {
-        default: YouTubeThumbnail;
-        medium: YouTubeThumbnail;
-        high: YouTubeThumbnail;
-    };
+    thumbnails: Thumbnails;
     defaultLanguage?: string;
     localized?: {
         title: string;
@@ -82,44 +143,90 @@ export interface YouTubeChannelSnippet {
     country?: string;
 }
 
-export interface YouTubeChannelStatistics {
-    viewCount: string;
-    subscriberCount: string;
-    hiddenSubscriberCount: boolean;
-    videoCount: string;
-}
-
-export interface YouTubeChannelContentDetails {
-    relatedPlaylists: {
-        likes?: string;
-        favorites?: string;
-        uploads: string;
-        watchHistory?: string;
-        watchLater?: string;
-    };
-}
-
-export interface YouTubeChannel {
+export interface Channel {
     kind: string;
     etag: string;
     id: string;
-    snippet: YouTubeChannelSnippet;
-    contentDetails: YouTubeChannelContentDetails;
-    statistics: YouTubeChannelStatistics;
+    snippet: ChannelSnippet;
+    contentDetails: {
+        relatedPlaylists: {
+            likes?: string;
+            favorites?: string;
+            uploads: string;
+        };
+    };
+    statistics: Statistics;
+    brandingSettings?: ChannelBrandingSettings;
+    topicDetails?: TopicDetails;
 }
 
-export interface YouTubeApiResponse<T> {
+export interface YouTubeChannelResponse {
+    kind: string;
+    etag: string;
+    items: Channel[];
+    pageInfo: PageInfo;
+}
+
+export interface CommentSnippet {
+    authorDisplayName: string;
+    authorProfileImageUrl: string;
+    authorChannelUrl: string;
+    authorChannelId: {
+        value: string;
+    };
+    videoId: string;
+    textDisplay: string;
+    textOriginal: string;
+    parentId?: string;
+    canRate: boolean;
+    viewerRating: string;
+    likeCount: number;
+    publishedAt: string;
+    updatedAt: string;
+}
+
+export interface Comment {
+    kind: string;
+    etag: string;
+    id: string;
+    snippet: CommentSnippet;
+}
+
+export interface CommentThread {
+    kind: string;
+    etag: string;
+    id: string;
+    snippet: {
+        videoId: string;
+        topLevelComment: Comment;
+        canReply: boolean;
+        totalReplyCount: number;
+        isPublic: boolean;
+    };
+    replies?: {
+        comments: Comment[];
+    };
+}
+
+export interface YouTubeCommentThreadResponse {
     kind: string;
     etag: string;
     nextPageToken?: string;
-    prevPageToken?: string;
-    pageInfo: {
-        totalResults: number;
-        resultsPerPage: number;
-    };
-    items: T[];
+    pageInfo: PageInfo;
+    items: CommentThread[];
 }
 
-export type YouTubeSearchResponse = YouTubeApiResponse<YouTubeSearchResult>;
-export type YouTubeVideoResponse = YouTubeApiResponse<YouTubeVideo>;
-export type YouTubeChannelResponse = YouTubeApiResponse<YouTubeChannel>; 
+export interface SearchOptions {
+    maxResults?: number;
+    safeSearch?: 'none' | 'moderate' | 'strict';
+    order?: 'date' | 'rating' | 'relevance' | 'title' | 'viewCount';
+    pageToken?: string;
+    regionCode?: string;
+    relevanceLanguage?: string;
+    publishedAfter?: Date;
+    publishedBefore?: Date;
+    videoCategoryId?: string;
+    videoDefinition?: 'any' | 'high' | 'standard';
+    videoDuration?: 'any' | 'long' | 'medium' | 'short';
+    videoType?: 'any' | 'episode' | 'movie';
+} 

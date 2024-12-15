@@ -1,5 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { VideoMetadata, SessionHistory } from '../types';
+import { ChannelInfo } from '../types/youtube';
 import { YouTubeService } from '../services/youtubeService';
 import { FilteringEngine } from '../services/filteringEngine';
 import { RootState } from './index';
@@ -71,10 +72,10 @@ export const startSession = createAsyncThunk<
                 channelIds.map(id => youtubeService.getChannelInfo(id))
             );
 
-            // Create channel map
-            const channelMap = new Map(
+            // Create channel map, filtering out null values
+            const channelMap = new Map<string, ChannelInfo>(
                 channelData
-                    .filter(channel => channel && channel.id)
+                    .filter((channel): channel is ChannelInfo => channel !== null)
                     .map(channel => [channel.id, channel])
             );
 
@@ -132,6 +133,24 @@ export const startSession = createAsyncThunk<
                     : 'Failed to start session. Please try again.'
             );
         }
+    }
+);
+
+export const fetchChannelDetails = createAsyncThunk(
+    'session/fetchChannelDetails',
+    async (channelIds: string[]) => {
+        const youtubeService = YouTubeService.getInstance();
+        const channelPromises = channelIds.map(id => youtubeService.getChannelInfo(id));
+        const channels = await Promise.all(channelPromises);
+        
+        // Filter out null values and create a map
+        const channelMap = new Map<string, ChannelInfo>(
+            channels
+                .filter((channel): channel is ChannelInfo => channel !== null)
+                .map(channel => [channel.id, channel])
+        );
+        
+        return channelMap;
     }
 );
 

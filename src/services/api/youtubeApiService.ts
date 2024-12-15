@@ -4,7 +4,8 @@ import { YouTubeApiError } from '../../types/api.types';
 import { 
     YouTubeSearchResponse, 
     YouTubeVideoResponse, 
-    YouTubeChannelResponse
+    YouTubeChannelResponse,
+    SearchOptions
 } from '../../types/youtube.types';
 
 interface QuotaCost {
@@ -20,6 +21,8 @@ export class YouTubeApiService {
     private authService: YouTubeAuthService;
     private dailyQuotaLimit: number = 10000;
     private quotaUsed: number = 0;
+    private retryAttempts: number = 3;
+    private retryDelay: number = 1000;
     
     private quotaCosts: QuotaCost = {
         search: 100,
@@ -43,6 +46,22 @@ export class YouTubeApiService {
             YouTubeApiService.instance = new YouTubeApiService();
         }
         return YouTubeApiService.instance;
+    }
+
+    private async retryOperation<T>(operation: () => Promise<T>): Promise<T> {
+        let lastError: Error | null = null;
+        for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+            try {
+                return await operation();
+            } catch (error) {
+                lastError = error as Error;
+                if (this.isQuotaExceeded(error) || attempt === this.retryAttempts) {
+                    throw error;
+                }
+                await new Promise(resolve => setTimeout(resolve, this.retryDelay * attempt));
+            }
+        }
+        throw lastError;
     }
 
     private setupInterceptors(): void {
@@ -75,11 +94,136 @@ export class YouTubeApiService {
         );
     }
 
+    public async searchVideos(
+        query: string, 
+        options: Partial<SearchOptions> = {}
+    ): Promise<YouTubeSearchResponse> {
+        const {
+            maxResults = 25,
+            safeSearch = 'moderate',
+            order = 'relevance',
+            pageToken,
+            regionCode,
+            relevanceLanguage,
+            publishedAfter,
+            publishedBefore,
+            videoCategoryId,
+            videoDefinition,
+            videoDuration,
+            videoType
+        } = options;
+
+        return this.retryOperation(async () => {
+            const response = await this.axiosInstance.get<YouTubeSearchResponse>('/search', {
+                params: {
+                    part: 'snippet',
+                    q: query,
+                    maxResults,
+                    type: 'video',
+                    safeSearch,
+                    videoEmbeddable: true,
+                    order,
+                    ...(pageToken && { pageToken }),
+                    ...(regionCode && { regionCode }),
+                    ...(relevanceLanguage && { relevanceLanguage }),
+                    ...(publishedAfter && { publishedAfter: publishedAfter.toISOString() }),
+                    ...(publishedBefore && { publishedBefore: publishedBefore.toISOString() }),
+                    ...(videoCategoryId && { videoCategoryId }),
+                    ...(videoDefinition && { videoDefinition }),
+                    ...(videoDuration && { videoDuration }),
+                    ...(videoType && { videoType })
+                }
+            });
+
+            if (!response.data.items?.length) {
+                return {
+                    kind: 'youtube#searchListResponse',
+                    etag: '',
+                    nextPageToken: undefined,
+                    prevPageToken: undefined,
+                    pageInfo: { totalResults: 0, resultsPerPage: 0 },
+                    items: []
+                };
+            }
+
+            return response.data;
+        });
+    }
+
+    public async getVideoDetails(videoIds: string | string[]): Promise<YouTubeVideoResponse> {
+        const ids = Array.isArray(videoIds) ? videoIds.join(',') : videoIds;
+        
+        return this.retryOperation(async () => {
+            const response = await this.axiosInstance.get<YouTubeVideoResponse>('/videos', {
+                params: {
+                    part: 'snippet,contentDetails,statistics,status,topicDetails',
+                    id: ids,
+                    maxResults: 50
+                }
+            });
+            
+            if (!response.data.items?.length) {
+                return {
+                    kind: 'youtube#videoListResponse',
+                    etag: '',
+                    items: [],
+                    pageInfo: { totalResults: 0, resultsPerPage: 0 }
+                };
+            }
+            
+            return response.data;
+        });
+    }
+
+    public async getChannelInfo(channelIds: string | string[]): Promise<YouTubeChannelResponse> {
+        const ids = Array.isArray(channelIds) ? channelIds.join(',') : channelIds;
+        
+        return this.retryOperation(async () => {
+            const response = await this.axiosInstance.get<YouTubeChannelResponse>('/channels', {
+                params: {
+                    part: 'snippet,contentDetails,statistics,brandingSettings,topicDetails',
+                    id: ids,
+                    maxResults: 50
+                }
+            });
+            
+            if (!response.data.items?.length) {
+                return {
+                    kind: 'youtube#channelListResponse',
+                    etag: '',
+                    items: [],
+                    pageInfo: { totalResults: 0, resultsPerPage: 0 }
+                };
+            }
+            
+            return response.data;
+        });
+    }
+
+    public async getCommentThreads(
+        videoId: string,
+        maxResults: number = 100,
+        pageToken?: string
+    ): Promise<any> {
+        return this.retryOperation(async () => {
+            const response = await this.axiosInstance.get('/commentThreads', {
+                params: {
+                    part: 'snippet,replies',
+                    videoId,
+                    maxResults,
+                    ...(pageToken && { pageToken })
+                }
+            });
+            
+            return response.data;
+        });
+    }
+
     private getEndpointFromUrl(url: string): keyof QuotaCost {
         if (url.includes('/search')) return 'search';
         if (url.includes('/videos')) return 'videos';
         if (url.includes('/channels')) return 'channels';
-        return 'videos'; // default cost
+        return 'videos';
     }
 
     private hasQuotaAvailable(endpoint: keyof QuotaCost): boolean {
@@ -120,19 +264,29 @@ export class YouTubeApiService {
 
     private async handleApiError(error: AxiosError<YouTubeApiError>): Promise<never> {
         if (error.response) {
-            const errorMessage = error.response.data?.error?.message || 'Unknown error';
+            const errorData = error.response.data?.error;
+            const errorMessage = errorData?.message || 'Unknown error';
+            const errorReason = errorData?.errors?.[0]?.reason;
             
             switch (error.response.status) {
+                case 400:
+                    throw new Error(`Invalid request: ${errorMessage}`);
                 case 401:
                     throw new Error(`Authentication failed: ${errorMessage}`);
                 case 403:
-                    throw new Error(`Quota exceeded or insufficient permissions: ${errorMessage}`);
+                    if (errorReason === 'quotaExceeded') {
+                        throw new Error('YouTube API quota exceeded. Please try again later.');
+                    }
+                    throw new Error(`Access forbidden: ${errorMessage}`);
                 case 404:
                     throw new Error(`Resource not found: ${errorMessage}`);
                 case 429:
                     throw new Error(`Rate limit exceeded. Please try again later: ${errorMessage}`);
+                case 500:
+                case 503:
+                    throw new Error(`YouTube API service error: ${errorMessage}`);
                 default:
-                    throw new Error(`YouTube API error: ${errorMessage}`);
+                    throw new Error(`YouTube API error (${error.response.status}): ${errorMessage}`);
             }
         }
         
@@ -141,107 +295,6 @@ export class YouTubeApiService {
         }
         
         throw new Error(`Error setting up request: ${error.message}`);
-    }
-
-    public async searchVideos(
-        query: string, 
-        maxResults: number = 25,
-        safeSearch: 'none' | 'moderate' | 'strict' = 'moderate',
-        order: 'date' | 'rating' | 'relevance' | 'title' | 'viewCount' = 'relevance',
-        pageToken?: string
-    ): Promise<YouTubeSearchResponse> {
-        try {
-            const response = await this.axiosInstance.get<YouTubeSearchResponse>('/search', {
-                params: {
-                    part: 'snippet',
-                    q: query,
-                    maxResults,
-                    type: 'video',
-                    safeSearch,
-                    videoEmbeddable: true,
-                    order,
-                    ...(pageToken && { pageToken })
-                }
-            });
-
-            if (!response.data.items || response.data.items.length === 0) {
-                return {
-                    kind: 'youtube#searchListResponse',
-                    etag: '',
-                    nextPageToken: undefined,
-                    prevPageToken: undefined,
-                    pageInfo: { totalResults: 0, resultsPerPage: 0 },
-                    items: []
-                };
-            }
-
-            return response.data;
-        } catch (error) {
-            if (this.isQuotaExceeded(error)) {
-                throw new Error('YouTube API quota exceeded. Please try again later.');
-            }
-            throw this.handleApiError(error as AxiosError<YouTubeApiError>);
-        }
-    }
-
-    public async getVideoDetails(videoIds: string): Promise<YouTubeVideoResponse> {
-        try {
-            const response = await this.axiosInstance.get<YouTubeVideoResponse>('/videos', {
-                params: {
-                    part: 'snippet,contentDetails,statistics',
-                    id: videoIds,
-                    maxResults: 50
-                }
-            });
-            
-            if (!response.data.items || response.data.items.length === 0) {
-                console.warn(`No video data found for IDs: ${videoIds}`);
-                return {
-                    kind: 'youtube#videoListResponse',
-                    etag: '',
-                    items: [],
-                    pageInfo: { totalResults: 0, resultsPerPage: 0 }
-                };
-            }
-            
-            return response.data;
-        } catch (error) {
-            if (this.isQuotaExceeded(error)) {
-                throw new Error('YouTube API quota exceeded. Please try again later.');
-            }
-            console.error(`Error fetching video details for IDs: ${videoIds}`, error);
-            throw this.handleApiError(error as AxiosError<YouTubeApiError>);
-        }
-    }
-
-    public async getChannelInfo(channelIds: string): Promise<YouTubeChannelResponse> {
-        try {
-            const response = await this.axiosInstance.get<YouTubeChannelResponse>('/channels', {
-                params: {
-                    part: 'snippet,contentDetails,statistics',
-                    id: channelIds,
-                    maxResults: 50
-                }
-            });
-            
-            if (!response.data.items || response.data.items.length === 0) {
-                console.warn(`No channel data found for IDs: ${channelIds}`);
-                return {
-                    kind: 'youtube#channelListResponse',
-                    etag: '',
-                    items: [],
-                    pageInfo: { totalResults: 0, resultsPerPage: 0 }
-                };
-            }
-            
-            return response.data;
-        } catch (error) {
-            if (this.isQuotaExceeded(error)) {
-                throw new Error('YouTube API quota exceeded. Please try again later.');
-            }
-            console.error(`Error fetching channel info for IDs: ${channelIds}`, error);
-            throw this.handleApiError(error as AxiosError<YouTubeApiError>);
-        }
     }
 
     private isQuotaExceeded(error: any): boolean {
