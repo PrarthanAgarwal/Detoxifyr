@@ -10,6 +10,7 @@ import { YouTubeService } from '../services/youtubeService';
 import { FilteringEngine } from '../services/filteringEngine';
 import { convertToVideoMetadata } from '../utils/videoUtils';
 import { VideoDetails } from '../types/youtube';
+import { VideoLength } from '../types';
 
 interface YouTubeSearchResponse {
   items: Array<{
@@ -155,10 +156,10 @@ const PreferencesForm: React.FC = () => {
     }
   };
 
-  const videoLengthOptions = [
-    { label: 'Short (< 5 min)', value: 5 },
-    { label: 'Medium (5-15 min)', value: 10 },
-    { label: 'Long (> 15 min)', value: 20 },
+  const videoLengthOptions: Array<{label: string; value: VideoLength}> = [
+    { label: 'Short (< 4 min)', value: 'short' },
+    { label: 'Medium (4-20 min)', value: 'medium' },
+    { label: 'Long (> 20 min)', value: 'long' }
   ];
 
   return (

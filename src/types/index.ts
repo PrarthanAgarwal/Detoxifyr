@@ -1,6 +1,8 @@
+export type VideoLength = 'short' | 'medium' | 'long';
+
 export interface UserPreferences {
   keywords: string[];
-  averageVideoLength: number;
+  averageVideoLength: VideoLength;
   numberOfVideos: number;
   languagePreferences: string[];
   contentLength: {

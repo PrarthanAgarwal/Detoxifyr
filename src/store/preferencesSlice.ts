@@ -1,9 +1,9 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { UserPreferences } from '../types';
+import { UserPreferences, VideoLength } from '../types';
 
 const initialState: UserPreferences = {
   keywords: [],
-  averageVideoLength: 10,
+  averageVideoLength: 'medium' as VideoLength,
   numberOfVideos: 5,
   languagePreferences: ['en'],
   contentLength: {

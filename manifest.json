@@ -9,7 +9,8 @@
     "cookies",
     "tabs",
     "identity",
-    "identity.email"
+    "identity.email",
+    "downloads"
   ],
   "host_permissions": [
     "https://*.youtube.com/*",

@@ -6,6 +6,7 @@ import {
     VideoMetadata
 } from '../types/quality';
 import { VideoDetails, ChannelInfo } from '../types/youtube';
+import { LoggingService } from './loggingService';
 
 // First, define the weights interface
 interface QualityWeights {
@@ -23,8 +24,11 @@ export class QualityService {
     private readonly COMMENT_RATIO_THRESHOLD = 0.001; // 0.1% comment rate
     private readonly MAX_AGE_DAYS = 365; // 1 year
     private readonly MIN_DESCRIPTION_LENGTH = 100;
+    private loggingService: LoggingService;
 
-    private constructor() {}
+    private constructor() {
+        this.loggingService = LoggingService.getInstance();
+    }
 
     public static getInstance(): QualityService {
         if (!QualityService.instance) {
@@ -158,7 +162,17 @@ export class QualityService {
         const commentScore = Math.min(1, metrics.viewToCommentRatio / this.COMMENT_RATIO_THRESHOLD);
         const viewScore = Math.min(1, Math.log10(metrics.avgDailyViews) / 5);
 
-        return (likeScore * 0.4 + commentScore * 0.3 + viewScore * 0.3);
+        const finalScore = (likeScore * 0.4 + commentScore * 0.3 + viewScore * 0.3);
+
+        this.loggingService.logEngagementScoreComponents(
+            metrics as any, // TODO: Update type
+            likeScore,
+            commentScore,
+            viewScore,
+            finalScore
+        );
+
+        return finalScore;
     }
 
     private calculateAuthorityScore(metrics: AuthorityMetrics): number {
@@ -166,19 +180,43 @@ export class QualityService {
         const verificationScore = metrics.isVerified ? 1 : 0.5;
         const viewScore = Math.min(1, Math.log10(metrics.avgVideoViews) / 6);
 
-        return (subscriberScore * 0.4 + verificationScore * 0.3 + viewScore * 0.3);
+        const finalScore = (subscriberScore * 0.4 + verificationScore * 0.3 + viewScore * 0.3);
+
+        this.loggingService.logAuthorityScoreComponents(
+            metrics as any, // TODO: Update type
+            metrics as any, // TODO: Update type
+            subscriberScore,
+            verificationScore,
+            viewScore,
+            finalScore
+        );
+
+        return finalScore;
     }
 
     private calculateContentQualityScore(metrics: ContentQualityMetrics): number {
         const hdScore = metrics.hasHDVideo ? 1 : 0.5;
         const captionScore = metrics.hasCaptions ? 1 : 0.7;
+        const descriptionScore = metrics.descriptionQuality;
+        const titleScore = metrics.titleQuality;
         
-        return (
+        const finalScore = (
             hdScore * 0.3 +
             captionScore * 0.2 +
-            metrics.descriptionQuality * 0.25 +
-            metrics.titleQuality * 0.25
+            descriptionScore * 0.25 +
+            titleScore * 0.25
         );
+
+        this.loggingService.logQualityScoreComponents(
+            metrics as any, // TODO: Update type
+            hdScore,
+            captionScore,
+            descriptionScore,
+            titleScore,
+            finalScore
+        );
+
+        return finalScore;
     }
 
     private calculateFreshnessScore(publishDate: Date): number {
@@ -192,42 +230,45 @@ export class QualityService {
         searchQuery: string
     ): number {
         try {
-            // Normalize all text for comparison
             const normalizedQuery = searchQuery.toLowerCase();
             const normalizedTitle = video.title.toLowerCase();
             const normalizedDescription = video.description.toLowerCase();
             const normalizedKeywords = metadata.keywords.map(k => k.toLowerCase());
 
-            // Calculate exact matches first
-            const exactMatchScore = this.calculateExactMatchScore(
+            const titleMatch = this.calculateExactMatchScore(
                 normalizedQuery,
                 normalizedTitle,
                 normalizedDescription,
                 normalizedKeywords
             );
 
-            // Calculate partial matches
             const queryTerms = new Set(normalizedQuery.split(/\s+/).filter(term => term.length > 2));
-            const titleTerms = new Set(normalizedTitle.split(/\s+/));
             const descriptionTerms = new Set(normalizedDescription.split(/\s+/));
 
-            const titleMatchScore = this.calculateTermOverlap(queryTerms, titleTerms);
-            const descriptionMatchScore = this.calculateTermOverlap(queryTerms, descriptionTerms);
-            const keywordMatchScore = this.calculateTermOverlap(
+            const descriptionMatch = this.calculateTermOverlap(queryTerms, descriptionTerms);
+            const keywordMatch = this.calculateTermOverlap(
                 queryTerms,
                 new Set(normalizedKeywords)
             );
 
-            // Combine scores with weights
-            return (
-                exactMatchScore * 0.4 +
-                titleMatchScore * 0.3 +
-                descriptionMatchScore * 0.2 +
-                keywordMatchScore * 0.1
+            const finalScore = (
+                titleMatch * 0.4 +
+                descriptionMatch * 0.3 +
+                keywordMatch * 0.3
             );
+
+            this.loggingService.logRelevancyScoreComponents(
+                video,
+                titleMatch,
+                descriptionMatch,
+                keywordMatch,
+                finalScore
+            );
+
+            return finalScore;
         } catch (error) {
             console.warn('Error calculating relevancy score:', error);
-            return 0.5; // Return neutral score on error
+            return 0.5;
         }
     }
 

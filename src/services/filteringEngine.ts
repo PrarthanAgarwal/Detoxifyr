@@ -1,11 +1,13 @@
 import { VideoDetails, ChannelInfo } from '../types/youtube';
 import { QualityMetrics, UserPreferences, QualityWeights, TieredQualityCriteria, TierCriteria } from '../types/quality';
 import { QualityService } from './qualityService';
+import { LoggingService } from './loggingService';
 import { isValidVideoId } from '../utils/validationUtils';
 
 export class FilteringEngine {
     private static instance: FilteringEngine;
     private qualityService: QualityService;
+    private loggingService: LoggingService;
     private readonly BATCH_SIZE = 50;
     private readonly MAX_RETRIES = 3;
     private readonly RETRY_DELAY = 1000;
@@ -49,6 +51,7 @@ export class FilteringEngine {
 
     private constructor() {
         this.qualityService = QualityService.getInstance();
+        this.loggingService = LoggingService.getInstance();
     }
 
     public static getInstance(): FilteringEngine {
@@ -65,10 +68,14 @@ export class FilteringEngine {
         searchQuery?: string
     ): Promise<{ videos: VideoDetails[]; metrics: Map<string, QualityMetrics>; usedTier: number }> {
         try {
+            this.loggingService.startProcessing();
+
             if (!videos?.length) {
                 console.warn('No videos provided to filter');
                 return { videos: [], metrics: new Map(), usedTier: 0 };
             }
+
+            this.loggingService.logInitialSearchResults(videos);
 
             // Pre-process videos with basic validation
             const processedVideos = this.preProcessVideos(videos);
@@ -96,6 +103,13 @@ export class FilteringEngine {
                 videoMetrics,
                 preferences.weights
             );
+
+            // Log statistical summary
+            this.loggingService.logStatisticalSummary(videoMetrics);
+            this.loggingService.logPerformanceMetrics();
+
+            // Save logs to file
+            await this.loggingService.saveLogs();
 
             return {
                 videos: sortedVideos.slice(0, preferences.numberOfVideos),
@@ -129,56 +143,45 @@ export class FilteringEngine {
 
         while (currentTier <= 3) {
             const tierCriteria = tieredCriteria[`tier${currentTier}` as keyof TieredQualityCriteria] as TierCriteria;
-            
-            console.log(`[Filtering] Attempting Tier ${currentTier}:`);
-            console.log(`- Authority Score: ${tierCriteria.minAuthorityScore}`);
-            console.log(`- Quality Score: ${tierCriteria.minQualityScore}`);
-            console.log(`- Engagement Score: ${tierCriteria.minEngagementScore}`);
-            console.log(`- Relevancy Score: ${tierCriteria.minRelevancyScore}`);
+            const failedVideos = new Map<string, { 
+                videoId: string, 
+                metrics: QualityMetrics, 
+                failedCriteria: string[] 
+            }>();
             
             filteredVideos = this.filterByTierCriteria(
                 videos,
                 metrics,
                 tierCriteria,
-                preferences
+                preferences,
+                failedVideos
             );
 
-            console.log(`[Filtering] Tier ${currentTier} results: ${filteredVideos.length} videos`);
+            this.loggingService.logTierAttempt(currentTier, tierCriteria, failedVideos);
 
-            // Check if we have enough results or should try next tier
             if (filteredVideos.length >= 3 || currentTier === 3) {
-                console.log(`[Filtering] Using Tier ${currentTier} - Found sufficient results or reached final tier`);
                 break;
             }
 
-            // Cache results before moving to next tier if enforcing strict transition
             if (tieredCriteria.enforceStrictTierTransition) {
                 const previousResults = [...filteredVideos];
                 currentTier++;
                 
-                // Merge with next tier results if available
                 if (currentTier <= 3) {
-                    console.log(`[Filtering] Attempting to merge with Tier ${currentTier} results`);
                     const nextTierResults = this.filterByTierCriteria(
                         videos,
                         metrics,
                         tieredCriteria[`tier${currentTier}` as keyof TieredQualityCriteria] as TierCriteria,
-                        preferences
+                        preferences,
+                        failedVideos
                     );
                     filteredVideos = [...previousResults, ...nextTierResults];
-                    console.log(`[Filtering] After merge: ${filteredVideos.length} total videos`);
                 }
             } else {
                 currentTier++;
             }
         }
 
-        // If we still don't have enough results and are above minimum acceptable tier
-        if (filteredVideos.length < 3 && currentTier > tieredCriteria.minimumAcceptableTier) {
-            console.warn(`[Filtering] Warning: Insufficient results (${filteredVideos.length}) at tier ${currentTier}`);
-        }
-
-        console.log(`[Filtering] Final results: Using Tier ${currentTier} with ${filteredVideos.length} videos`);
         return { filteredVideos, usedTier: currentTier };
     }
 
@@ -186,52 +189,58 @@ export class FilteringEngine {
         videos: VideoDetails[],
         metrics: Map<string, QualityMetrics>,
         criteria: TierCriteria,
-        preferences: UserPreferences
+        preferences: UserPreferences,
+        failedVideos: Map<string, { videoId: string; metrics: QualityMetrics; failedCriteria: string[] }>
     ): VideoDetails[] {
         return videos.filter(video => {
             const videoMetrics = metrics.get(video.id);
             if (!videoMetrics) return false;
 
+            const failedCriteria: string[] = [];
+
             // Check core quality metrics
-            if (
-                videoMetrics.authorityScore < criteria.minAuthorityScore ||
-                videoMetrics.contentQualityScore < criteria.minQualityScore ||
-                videoMetrics.engagementScore < criteria.minEngagementScore ||
-                videoMetrics.relevancyScore < criteria.minRelevancyScore
-            ) {
-                return false;
+            if (videoMetrics.authorityScore < criteria.minAuthorityScore) {
+                failedCriteria.push(`Authority Score (${videoMetrics.authorityScore} < ${criteria.minAuthorityScore})`);
+            }
+            if (videoMetrics.contentQualityScore < criteria.minQualityScore) {
+                failedCriteria.push(`Quality Score (${videoMetrics.contentQualityScore} < ${criteria.minQualityScore})`);
+            }
+            if (videoMetrics.engagementScore < criteria.minEngagementScore) {
+                failedCriteria.push(`Engagement Score (${videoMetrics.engagementScore} < ${criteria.minEngagementScore})`);
+            }
+            if (videoMetrics.relevancyScore < criteria.minRelevancyScore) {
+                failedCriteria.push(`Relevancy Score (${videoMetrics.relevancyScore} < ${criteria.minRelevancyScore})`);
             }
 
             // Check additional criteria
             const duration = this.parseDuration(video.duration || '');
             const ageInDays = this.calculateAgeInDays(video.publishedAt);
             
-            if (
-                video.viewCount < criteria.minViewCount ||
-                duration < criteria.minDuration ||
-                duration > criteria.maxDuration ||
-                ageInDays > criteria.maxAgeInDays
-            ) {
-                return false;
+            if (video.viewCount < criteria.minViewCount) {
+                failedCriteria.push(`View Count (${video.viewCount} < ${criteria.minViewCount})`);
+            }
+            if (duration < criteria.minDuration) {
+                failedCriteria.push(`Duration Too Short (${duration}s < ${criteria.minDuration}s)`);
+            }
+            if (duration > criteria.maxDuration) {
+                failedCriteria.push(`Duration Too Long (${duration}s > ${criteria.maxDuration}s)`);
+            }
+            if (ageInDays > criteria.maxAgeInDays) {
+                failedCriteria.push(`Too Old (${ageInDays} days > ${criteria.maxAgeInDays} days)`);
             }
 
             // Check completeness if required
             if (criteria.requiresCompleteness) {
-                if (
-                    !video.description ||
-                    !video.thumbnails?.high ||
-                    !video.title ||
-                    (video.tags?.length || 0) === 0
-                ) {
-                    return false;
+                if (!video.description || !video.thumbnails?.high || !video.title || (video.tags?.length || 0) === 0) {
+                    failedCriteria.push('Incomplete Metadata');
                 }
             }
 
-            // Apply user-specific preferences that shouldn't be relaxed
+            // Apply user-specific preferences
             if (preferences.languagePreferences?.length) {
                 const videoLanguage = video.defaultLanguage || 'en';
                 if (!preferences.languagePreferences.includes(videoLanguage)) {
-                    return false;
+                    failedCriteria.push(`Language Mismatch (${videoLanguage})`);
                 }
             }
 
@@ -240,8 +249,17 @@ export class FilteringEngine {
                     video.regionRestriction.blocked?.includes(preferences.regionCode) ||
                     (video.regionRestriction.allowed && !video.regionRestriction.allowed.includes(preferences.regionCode))
                 ) {
-                    return false;
+                    failedCriteria.push(`Region Restricted (${preferences.regionCode})`);
                 }
+            }
+
+            if (failedCriteria.length > 0) {
+                failedVideos.set(video.id, {
+                    videoId: video.id,
+                    metrics: videoMetrics,
+                    failedCriteria
+                });
+                return false;
             }
 
             return true;
