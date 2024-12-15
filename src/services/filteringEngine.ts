@@ -1,5 +1,5 @@
 import { VideoDetails, ChannelInfo } from '../types/youtube';
-import { QualityMetrics, UserPreferences, QualityWeights } from '../types/quality';
+import { QualityMetrics, UserPreferences, QualityWeights, TieredQualityCriteria, TierCriteria } from '../types/quality';
 import { QualityService } from './qualityService';
 import { isValidVideoId } from '../utils/validationUtils';
 
@@ -9,6 +9,43 @@ export class FilteringEngine {
     private readonly BATCH_SIZE = 50;
     private readonly MAX_RETRIES = 3;
     private readonly RETRY_DELAY = 1000;
+    private readonly DEFAULT_TIERED_CRITERIA: TieredQualityCriteria = {
+        tier1: {
+            minAuthorityScore: 0.5,
+            minQualityScore: 0.5,
+            minEngagementScore: 0.5,
+            minRelevancyScore: 0.5,
+            minViewCount: 1000,
+            minDuration: 60,
+            maxDuration: 3600,
+            maxAgeInDays: 365,
+            requiresCompleteness: true
+        },
+        tier2: {
+            minAuthorityScore: 0.5,
+            minQualityScore: 0.5,
+            minEngagementScore: 0.3,
+            minRelevancyScore: 0.4,
+            minViewCount: 500,
+            minDuration: 45,
+            maxDuration: 4500,
+            maxAgeInDays: 730,
+            requiresCompleteness: true
+        },
+        tier3: {
+            minAuthorityScore: 0.4,
+            minQualityScore: 0.4,
+            minEngagementScore: 0.2,
+            minRelevancyScore: 0.3,
+            minViewCount: 200,
+            minDuration: 30,
+            maxDuration: 5400,
+            maxAgeInDays: 1095,
+            requiresCompleteness: false
+        },
+        minimumAcceptableTier: 3,
+        enforceStrictTierTransition: true
+    };
 
     private constructor() {
         this.qualityService = QualityService.getInstance();
@@ -26,115 +63,211 @@ export class FilteringEngine {
         channels: Map<string, ChannelInfo>,
         preferences: UserPreferences,
         searchQuery?: string
-    ): Promise<{ videos: VideoDetails[]; metrics: Map<string, QualityMetrics> }> {
+    ): Promise<{ videos: VideoDetails[]; metrics: Map<string, QualityMetrics>; usedTier: number }> {
         try {
             if (!videos?.length) {
                 console.warn('No videos provided to filter');
-                return { videos: [], metrics: new Map() };
+                return { videos: [], metrics: new Map(), usedTier: 0 };
             }
 
-            // Pre-process videos with more lenient validation
-            const processedVideos = videos.filter(video => {
-                if (!video) {
-                    console.warn('Null or undefined video in input');
-                    return false;
-                }
-
-                // Basic validation only
-                if (!video.id || !video.channelId) {
-                    console.warn(`Missing required fields for video: ${video.id}`);
-                    return false;
-                }
-
-                return true;
-            });
-
+            // Pre-process videos with basic validation
+            const processedVideos = this.preProcessVideos(videos);
             if (processedVideos.length === 0) {
-                console.warn('No valid videos after basic validation');
-                return { videos: [], metrics: new Map() };
+                return { videos: [], metrics: new Map(), usedTier: 0 };
             }
 
-            // Step 1: Get available channel data
-            const uniqueChannelIds = [...new Set(processedVideos.map(v => v.channelId))];
-            const availableChannels = uniqueChannelIds.filter(id => channels.has(id));
-            
-            if (availableChannels.length === 0) {
-                console.warn('No channel data available');
-                return { videos: [], metrics: new Map() };
-            }
-
-            // Continue with videos that have channel data
-            const videosWithChannels = processedVideos.filter(video => 
-                channels.has(video.channelId)
-            );
-
-            if (videosWithChannels.length === 0) {
-                console.warn('No videos with available channel data');
-                return { videos: [], metrics: new Map() };
-            }
-
-            // Step 2: Calculate initial metrics with more lenient thresholds
+            // Calculate metrics for all videos
             const videoMetrics = await this.calculateBatchMetrics(
-                videosWithChannels, 
+                processedVideos,
                 channels,
                 searchQuery
             );
 
-            if (!videoMetrics.size) {
-                console.warn('No quality metrics calculated');
-                return { videos: [], metrics: new Map() };
-            }
-
-            // Step 3: Apply very lenient initial filtering
-            const initialFiltered = this.applyPreferencesFilter(
-                videosWithChannels,
+            // Apply tiered filtering
+            const { filteredVideos, usedTier } = await this.applyTieredFiltering(
+                processedVideos,
                 videoMetrics,
-                {
-                    ...preferences,
-                    minEngagementScore: preferences.minEngagementScore * 0.6,
-                    minQualityScore: preferences.minQualityScore * 0.6,
-                    minAuthorityScore: preferences.minAuthorityScore * 0.6,
-                    minRelevancyScore: preferences.minRelevancyScore * 0.6
-                }
+                preferences
             );
 
-            if (initialFiltered.length === 0) {
-                console.warn('No videos passed initial filtering');
-                return { videos: [], metrics: videoMetrics };
-            }
-
-            // Step 4: Apply more lenient advanced filtering
-            const advancedFiltered = this.applyAdvancedFilters(
-                initialFiltered,
-                videoMetrics,
-                {
-                    ...preferences,
-                    minViewCount: Math.floor(preferences.minViewCount * 0.7),
-                    minDuration: Math.floor(preferences.minDuration * 0.8),
-                    maxDuration: Math.ceil(preferences.maxDuration * 1.2)
-                }
-            );
-
-            if (advancedFiltered.length === 0) {
-                console.warn('No videos passed advanced filtering');
-                return { videos: initialFiltered.slice(0, preferences.numberOfVideos), metrics: videoMetrics };
-            }
-
-            // Step 5: Sort by weighted score
+            // Sort the filtered videos
             const sortedVideos = this.sortByWeightedScore(
-                advancedFiltered,
+                filteredVideos,
                 videoMetrics,
                 preferences.weights
             );
 
-            return { 
+            return {
                 videos: sortedVideos.slice(0, preferences.numberOfVideos),
-                metrics: videoMetrics 
+                metrics: videoMetrics,
+                usedTier
             };
         } catch (error) {
             console.error('Error in filterAndRankContent:', error);
-            return { videos: [], metrics: new Map() };
+            return { videos: [], metrics: new Map(), usedTier: 0 };
         }
+    }
+
+    private preProcessVideos(videos: VideoDetails[]): VideoDetails[] {
+        return videos.filter(video => {
+            if (!video || !video.id || !video.channelId) {
+                console.warn(`Invalid video data: ${video?.id}`);
+                return false;
+            }
+            return isValidVideoId(video.id);
+        });
+    }
+
+    private async applyTieredFiltering(
+        videos: VideoDetails[],
+        metrics: Map<string, QualityMetrics>,
+        preferences: UserPreferences
+    ): Promise<{ filteredVideos: VideoDetails[]; usedTier: number }> {
+        const tieredCriteria = this.generateTieredCriteria(preferences);
+        let filteredVideos: VideoDetails[] = [];
+        let currentTier = 1;
+
+        while (currentTier <= 3) {
+            const tierCriteria = tieredCriteria[`tier${currentTier}` as keyof TieredQualityCriteria] as TierCriteria;
+            
+            console.log(`[Filtering] Attempting Tier ${currentTier}:`);
+            console.log(`- Authority Score: ${tierCriteria.minAuthorityScore}`);
+            console.log(`- Quality Score: ${tierCriteria.minQualityScore}`);
+            console.log(`- Engagement Score: ${tierCriteria.minEngagementScore}`);
+            console.log(`- Relevancy Score: ${tierCriteria.minRelevancyScore}`);
+            
+            filteredVideos = this.filterByTierCriteria(
+                videos,
+                metrics,
+                tierCriteria,
+                preferences
+            );
+
+            console.log(`[Filtering] Tier ${currentTier} results: ${filteredVideos.length} videos`);
+
+            // Check if we have enough results or should try next tier
+            if (filteredVideos.length >= 3 || currentTier === 3) {
+                console.log(`[Filtering] Using Tier ${currentTier} - Found sufficient results or reached final tier`);
+                break;
+            }
+
+            // Cache results before moving to next tier if enforcing strict transition
+            if (tieredCriteria.enforceStrictTierTransition) {
+                const previousResults = [...filteredVideos];
+                currentTier++;
+                
+                // Merge with next tier results if available
+                if (currentTier <= 3) {
+                    console.log(`[Filtering] Attempting to merge with Tier ${currentTier} results`);
+                    const nextTierResults = this.filterByTierCriteria(
+                        videos,
+                        metrics,
+                        tieredCriteria[`tier${currentTier}` as keyof TieredQualityCriteria] as TierCriteria,
+                        preferences
+                    );
+                    filteredVideos = [...previousResults, ...nextTierResults];
+                    console.log(`[Filtering] After merge: ${filteredVideos.length} total videos`);
+                }
+            } else {
+                currentTier++;
+            }
+        }
+
+        // If we still don't have enough results and are above minimum acceptable tier
+        if (filteredVideos.length < 3 && currentTier > tieredCriteria.minimumAcceptableTier) {
+            console.warn(`[Filtering] Warning: Insufficient results (${filteredVideos.length}) at tier ${currentTier}`);
+        }
+
+        console.log(`[Filtering] Final results: Using Tier ${currentTier} with ${filteredVideos.length} videos`);
+        return { filteredVideos, usedTier: currentTier };
+    }
+
+    private filterByTierCriteria(
+        videos: VideoDetails[],
+        metrics: Map<string, QualityMetrics>,
+        criteria: TierCriteria,
+        preferences: UserPreferences
+    ): VideoDetails[] {
+        return videos.filter(video => {
+            const videoMetrics = metrics.get(video.id);
+            if (!videoMetrics) return false;
+
+            // Check core quality metrics
+            if (
+                videoMetrics.authorityScore < criteria.minAuthorityScore ||
+                videoMetrics.contentQualityScore < criteria.minQualityScore ||
+                videoMetrics.engagementScore < criteria.minEngagementScore ||
+                videoMetrics.relevancyScore < criteria.minRelevancyScore
+            ) {
+                return false;
+            }
+
+            // Check additional criteria
+            const duration = this.parseDuration(video.duration || '');
+            const ageInDays = this.calculateAgeInDays(video.publishedAt);
+            
+            if (
+                video.viewCount < criteria.minViewCount ||
+                duration < criteria.minDuration ||
+                duration > criteria.maxDuration ||
+                ageInDays > criteria.maxAgeInDays
+            ) {
+                return false;
+            }
+
+            // Check completeness if required
+            if (criteria.requiresCompleteness) {
+                if (
+                    !video.description ||
+                    !video.thumbnails?.high ||
+                    !video.title ||
+                    (video.tags?.length || 0) === 0
+                ) {
+                    return false;
+                }
+            }
+
+            // Apply user-specific preferences that shouldn't be relaxed
+            if (preferences.languagePreferences?.length) {
+                const videoLanguage = video.defaultLanguage || 'en';
+                if (!preferences.languagePreferences.includes(videoLanguage)) {
+                    return false;
+                }
+            }
+
+            if (preferences.regionCode && video.regionRestriction) {
+                if (
+                    video.regionRestriction.blocked?.includes(preferences.regionCode) ||
+                    (video.regionRestriction.allowed && !video.regionRestriction.allowed.includes(preferences.regionCode))
+                ) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }
+
+    private generateTieredCriteria(preferences: UserPreferences): TieredQualityCriteria {
+        // Start with default criteria
+        const criteria = { ...this.DEFAULT_TIERED_CRITERIA };
+
+        // Adjust based on user preferences while maintaining tier relationships
+        if (preferences.minAuthorityScore > criteria.tier1.minAuthorityScore) {
+            const diff = preferences.minAuthorityScore - criteria.tier1.minAuthorityScore;
+            criteria.tier1.minAuthorityScore += diff;
+            criteria.tier2.minAuthorityScore += diff * 0.8;
+            criteria.tier3.minAuthorityScore += diff * 0.6;
+        }
+
+        // Similar adjustments for other metrics...
+        return criteria;
+    }
+
+    private calculateAgeInDays(publishedAt: string): number {
+        const publishDate = new Date(publishedAt);
+        const now = new Date();
+        return Math.floor((now.getTime() - publishDate.getTime()) / (1000 * 60 * 60 * 24));
     }
 
     private async calculateBatchMetrics(
@@ -206,67 +339,6 @@ export class FilteringEngine {
         await Promise.allSettled(promises);
     }
 
-    private applyPreferencesFilter(
-        videos: VideoDetails[],
-        metrics: Map<string, QualityMetrics>,
-        preferences: UserPreferences
-    ): VideoDetails[] {
-        return videos.filter(video => {
-            // Validate video ID first
-            if (!isValidVideoId(video.id)) {
-                console.warn(`Skipping video with invalid ID: ${video.id}`);
-                return false;
-            }
-
-            const videoMetrics = metrics.get(video.id);
-            if (!videoMetrics) {
-                console.warn(`No metrics found for video ${video.id}`);
-                return false;
-            }
-
-            try {
-                return this.meetsPreferences(videoMetrics, preferences);
-            } catch (error) {
-                console.error(`Error checking preferences for video ${video.id}:`, error);
-                return false;
-            }
-        });
-    }
-
-    private applyAdvancedFilters(
-        videos: VideoDetails[],
-        _metrics: Map<string, QualityMetrics>,
-        preferences: UserPreferences
-    ): VideoDetails[] {
-        return videos.filter(video => {
-            try {
-                // Apply view count threshold
-                if (video.viewCount < preferences.minViewCount) return false;
-
-                // Apply content length filter
-                const duration = this.parseDuration(video.duration || '');
-                if (duration < preferences.minDuration || duration > preferences.maxDuration) return false;
-
-                // Apply language filter if specified
-                if (preferences.languagePreferences && preferences.languagePreferences.length > 0) {
-                    const videoLanguage = video.defaultLanguage || 'en';
-                    if (!preferences.languagePreferences.includes(videoLanguage)) return false;
-                }
-
-                // Apply region code filter if specified
-                if (preferences.regionCode && video.regionRestriction) {
-                    if (video.regionRestriction.blocked?.includes(preferences.regionCode)) return false;
-                    if (video.regionRestriction.allowed && !video.regionRestriction.allowed.includes(preferences.regionCode)) return false;
-                }
-
-                return true;
-            } catch (error) {
-                console.warn(`Error applying advanced filters to video ${video.id}:`, error);
-                return false;
-            }
-        });
-    }
-
     private sortByWeightedScore(
         videos: VideoDetails[],
         metrics: Map<string, QualityMetrics>,
@@ -304,24 +376,6 @@ export class FilteringEngine {
         } catch (error) {
             console.warn('Error calculating weighted score:', error);
             return 0;
-        }
-    }
-
-    private meetsPreferences(
-        metrics: QualityMetrics,
-        preferences: UserPreferences
-    ): boolean {
-        try {
-            return (
-                metrics.engagementScore >= preferences.minEngagementScore &&
-                metrics.authorityScore >= preferences.minAuthorityScore &&
-                metrics.contentQualityScore >= preferences.minQualityScore &&
-                metrics.freshnessScore >= (1 - preferences.maxContentAge / 365) &&
-                metrics.relevancyScore >= preferences.minRelevancyScore
-            );
-        } catch (error) {
-            console.warn('Error checking preferences:', error);
-            return false;
         }
     }
 

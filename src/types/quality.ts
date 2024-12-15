@@ -9,7 +9,7 @@ export interface QualityMetrics {
 }
 
 export interface UserPreferences {
-    // Basic quality thresholds
+    // Basic quality thresholds (used as base for tier adjustments)
     minEngagementScore: number;
     minAuthorityScore: number;
     minQualityScore: number;
@@ -26,6 +26,13 @@ export interface UserPreferences {
     
     // Scoring weights
     weights: QualityWeights;
+
+    // Tiered quality preferences
+    tieredQualityPreferences?: {
+        minimumAcceptableTier: 1 | 2 | 3;
+        enforceStrictTierTransition: boolean;
+        disableTieredFallback: boolean;
+    };
 }
 
 export interface QualityWeights {
@@ -124,4 +131,27 @@ export interface ChannelInfo {
         id: string;
         publishedAt: string;
     }[];
+}
+
+export interface TierCriteria {
+    // Core Quality Metrics
+    minAuthorityScore: number;
+    minQualityScore: number;
+    minEngagementScore: number;
+    minRelevancyScore: number;
+
+    // Additional Criteria
+    minViewCount: number;
+    minDuration: number;
+    maxDuration: number;
+    maxAgeInDays: number;
+    requiresCompleteness: boolean;
+}
+
+export interface TieredQualityCriteria {
+    tier1: TierCriteria;  // Optimal Quality
+    tier2: TierCriteria;  // Balanced Quality
+    tier3: TierCriteria;  // Minimum Viable Quality
+    minimumAcceptableTier: 1 | 2 | 3;
+    enforceStrictTierTransition: boolean;
 } 
