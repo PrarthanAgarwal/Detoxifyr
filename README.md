@@ -77,6 +77,54 @@ Detoxifyr integrates with:
 - Google Identity Services
 - Custom backend services
 
+## Quality Control System
+
+### Tiered Fallback Mechanism
+
+Detoxifyr implements a sophisticated three-tier quality control system that ensures users receive the best possible content while gracefully handling edge cases:
+
+#### Tier 1: Optimal Quality
+- **Core Quality Metrics**:
+  * Authority Score: 0.5+ (Channel reputation, subscriber count)
+  * Quality Score: 0.5+ (Video production value, description quality)
+  * Engagement Score: 0.5+ (Like/dislike ratio, comment interaction)
+  * Relevancy Score: 0.5+ (Title/description match with search)
+- **Additional Criteria**:
+  * Minimum Views: 1,000+
+  * Duration: 60-3,600 seconds
+  * Age: Less than 365 days
+  * Complete metadata required
+
+#### Tier 2: Balanced Quality
+- **Core Standards**:
+  * Maintains strict authority (0.5+) and quality (0.5+) requirements
+- **Relaxed Metrics**:
+  * Engagement Score: 0.3+
+  * Relevancy Score: 0.4+
+  * Minimum Views: 500+
+  * Duration: 45-4,500 seconds
+  * Age: Up to 730 days
+
+#### Tier 3: Minimum Viable Quality
+- **Basic Standards**:
+  * Authority Score: 0.4+
+  * Quality Score: 0.4+
+  * Engagement Score: 0.2+
+  * Relevancy Score: 0.3+
+- **Flexible Criteria**:
+  * Minimum Views: 200+
+  * Duration: 30-5,400 seconds
+  * Age: Up to 1,095 days
+  * Basic metadata completeness
+
+### Implementation Details
+- Automatic tier progression when insufficient results
+- Console logging for tier usage and transitions
+- User control over minimum acceptable tier
+- Visual indicators in UI for content quality level
+- Caching of higher-tier results during fallback
+- Performance monitoring and quality assurance
+
 ## Project Structure
 
 ```
