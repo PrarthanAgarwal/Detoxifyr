@@ -26,5 +26,6 @@ detoxifyr_key.pem
 *.sln
 *.sw?
 
+.env
 .env.local
 .env.*.local
