@@ -5,12 +5,13 @@ import {
     VideoDetails, 
     ChannelInfo, 
     SearchResponse,
-    ThumbnailInfo
-} from '../types/youtube';
+    ThumbnailInfo,
+    UserPreferences,
+    SearchOptions
+} from '../types/quality';
 import { 
     Video,
-    Channel,
-    SearchOptions
+    Channel
 } from '../types/youtube.types';
 
 export class YouTubeService {
@@ -31,7 +32,7 @@ export class YouTubeService {
         return YouTubeService.instance;
     }
 
-    public async searchVideos(params: { query: string } & Partial<SearchOptions>): Promise<SearchResponse> {
+    public async searchVideos(params: { query: string; preferences?: UserPreferences } & Partial<SearchOptions>): Promise<SearchResponse> {
         try {
             const optimizedQuery = this.buildOptimizedQuery(params.query);
             
@@ -40,64 +41,147 @@ export class YouTubeService {
                 return this.createEmptySearchResponse();
             }
 
-            // Step 1: Initial search
-            const searchResponse = await this.apiService.searchVideos(optimizedQuery, params);
-
-            if (!searchResponse?.items?.length) {
-                console.warn('No search results found');
-                return this.createEmptySearchResponse();
-            }
-
-            // Step 2: Extract valid IDs
-            const validItems = searchResponse.items.filter(item => 
-                item?.id?.videoId && 
-                item?.snippet?.channelId &&
-                isValidVideoId(item.id.videoId) &&
-                isValidChannelId(item.snippet.channelId)
-            );
-
-            if (!validItems.length) {
-                console.warn('No valid items in search results');
-                return this.createEmptySearchResponse();
-            }
-
-            // Step 3: Get unique IDs
-            const videoIds = [...new Set(validItems.map(item => item.id.videoId!))];
-            const channelIds = [...new Set(validItems.map(item => item.snippet.channelId))];
-
-            // Step 4: Fetch details in parallel with caching
-            const [videos, channels] = await Promise.all([
-                this.fetchVideoDetailsWithRetry(videoIds),
-                this.fetchChannelDetailsWithRetry(channelIds)
-            ]);
-
-            if (!videos.length || !channels.length) {
-                console.warn('No valid videos or channels retrieved');
-                return this.createEmptySearchResponse();
-            }
-
-            // Step 5: Create channel map and match videos
-            const channelMap = new Map(channels.map(channel => [channel.id, channel]));
-            const validVideos = videos
-                .filter(video => video?.snippet?.channelId && channelMap.has(video.snippet.channelId))
-                .map(video => this.formatVideoDetails(video));
-
-            if (!validVideos.length) {
-                console.warn('No videos with valid channel data');
-                return this.createEmptySearchResponse();
-            }
-
-            // Step 6: Return results
-            return {
-                items: validVideos,
-                nextPageToken: searchResponse.nextPageToken,
-                prevPageToken: searchResponse.prevPageToken,
-                totalResults: validVideos.length
+            // Build duration parameter based on preferences
+            const durationParam = this.getDurationParameter(params.preferences?.videoLength);
+            
+            // Step 1: Initial search with only supported parts
+            const apiParams = {
+                query: optimizedQuery,
+                videoDuration: durationParam,
+                videoEmbeddable: true,
+                type: 'video',
+                part: ['snippet', 'id'], // Only request supported parts
+                maxResults: this.calculateMaxResults(params.maxResults),
+                safeSearch: params.safeSearch,
+                order: params.order,
+                regionCode: params.regionCode,
+                relevanceLanguage: params.relevanceLanguage
             };
+
+            // Perform search request with proper error handling
+            const searchResponse = await this.performSearchRequest(apiParams);
+            if (!searchResponse?.items?.length) {
+                return this.createEmptySearchResponse();
+            }
+
+            // Process and validate search results
+            const { videoIds, channelIds } = this.extractValidIds(searchResponse.items);
+            if (!videoIds.length) {
+                console.warn('No valid video IDs found in search results');
+                return this.createEmptySearchResponse();
+            }
+
+            // Fetch additional details in parallel with proper error handling
+            const [videoDetails, channels] = await this.fetchDetailsInParallel(videoIds, channelIds);
+            if (!videoDetails.length || !channels.length) {
+                console.warn('Failed to fetch video or channel details');
+                return this.createEmptySearchResponse();
+            }
+
+            // Process and combine results
+            const results = this.processSearchResults(videoDetails, channels, searchResponse);
+            return results;
 
         } catch (error) {
             console.error('Error in searchVideos:', error);
             return this.createEmptySearchResponse();
+        }
+    }
+
+    private async performSearchRequest(apiParams: any): Promise<any> {
+        try {
+            return await this.apiService.searchVideos(apiParams);
+        } catch (error) {
+            console.error('Search request failed:', error);
+            throw error;
+        }
+    }
+
+    private extractValidIds(items: any[]): { videoIds: string[]; channelIds: string[] } {
+        const validItems = items.filter(item => {
+            if (!item?.id?.videoId || !item?.snippet?.channelId ||
+                !isValidVideoId(item.id.videoId) || !isValidChannelId(item.snippet.channelId)) {
+                return false;
+            }
+            return !this.isShortFormContent(item.snippet.title, item.snippet.description);
+        });
+
+        return {
+            videoIds: [...new Set(validItems.map(item => item.id.videoId))],
+            channelIds: [...new Set(validItems.map(item => item.snippet.channelId))]
+        };
+    }
+
+    private async fetchDetailsInParallel(videoIds: string[], channelIds: string[]) {
+        try {
+            return await Promise.all([
+                this.fetchVideoDetailsWithRetry(videoIds),
+                this.fetchChannelDetailsWithRetry(channelIds)
+            ]);
+        } catch (error) {
+            console.error('Error fetching details:', error);
+            return [[], []];
+        }
+    }
+
+    private processSearchResults(videoDetails: Video[], channels: Channel[], searchResponse: any): SearchResponse {
+        const channelMap = new Map(channels.map(channel => [channel.id, this.formatChannelInfo(channel)]));
+        
+        const validVideos = videoDetails
+            .filter(video => {
+                if (!video?.snippet?.channelId || !channelMap.has(video.snippet.channelId)) {
+                    return false;
+                }
+                return !this.isVerticalVideo(video);
+            })
+            .map(video => this.formatVideoDetails(video));
+
+        if (!validVideos.length) {
+            return this.createEmptySearchResponse();
+        }
+
+        return {
+            items: validVideos,
+            channels: channelMap,
+            nextPageToken: searchResponse.nextPageToken,
+            prevPageToken: searchResponse.prevPageToken,
+            totalResults: validVideos.length
+        };
+    }
+
+    private calculateMaxResults(requested?: number): number {
+        const MIN_RESULTS = 5;
+        const MAX_RESULTS = 50;
+        const DEFAULT_RESULTS = 25;
+
+        if (!requested) {
+            return DEFAULT_RESULTS;
+        }
+
+        return Math.min(Math.max(requested, MIN_RESULTS), MAX_RESULTS);
+    }
+
+    private async fetchVideoDetailsWithRetry(videoIds: string[]): Promise<Video[]> {
+        if (!videoIds.length) return [];
+
+        try {
+            const response = await this.apiService.getVideoDetails(videoIds);
+            return response.items || [];
+        } catch (error) {
+            console.error('Error fetching video details:', error);
+            return [];
+        }
+    }
+
+    private async fetchChannelDetailsWithRetry(channelIds: string[]): Promise<Channel[]> {
+        if (!channelIds.length) return [];
+
+        try {
+            const response = await this.apiService.getChannelInfo(channelIds);
+            return response.items || [];
+        } catch (error) {
+            console.error('Error fetching channel details:', error);
+            return [];
         }
     }
 
@@ -157,35 +241,27 @@ export class YouTubeService {
         }
     }
 
-    private async fetchVideoDetailsWithRetry(videoIds: string[]): Promise<Video[]> {
-        try {
-            const response = await this.apiService.getVideoDetails(videoIds);
-            return response.items || [];
-        } catch (error) {
-            console.error('Error fetching video details:', error);
-            return [];
-        }
-    }
-
-    private async fetchChannelDetailsWithRetry(channelIds: string[]): Promise<Channel[]> {
-        try {
-            const response = await this.apiService.getChannelInfo(channelIds);
-            return response.items || [];
-        } catch (error) {
-            console.error('Error fetching channel details:', error);
-            return [];
-        }
-    }
-
     private buildOptimizedQuery(query: string): string {
-        return query.trim()
+        // Remove any existing shorts-related hashtags from the query
+        const shortsHashtags = ['#shorts', '#short', '#youtubeshorts'];
+        let optimizedQuery = query.trim();
+        
+        shortsHashtags.forEach(hashtag => {
+            optimizedQuery = optimizedQuery.replace(new RegExp(hashtag, 'gi'), '');
+        });
+
+        // Clean up the query
+        optimizedQuery = optimizedQuery
             .replace(/\s+/g, ' ')
-            .replace(/[^\w\s-]/g, '');
+            .trim();
+
+        return optimizedQuery;
     }
 
     private createEmptySearchResponse(): SearchResponse {
         return {
             items: [],
+            channels: new Map(),
             nextPageToken: undefined,
             prevPageToken: undefined,
             totalResults: 0
@@ -225,10 +301,28 @@ export class YouTubeService {
             categoryId: video.snippet.categoryId,
             hasCaptions: video.contentDetails?.caption === 'true',
             contentDetails: {
-                audioQuality: video.contentDetails?.audioQuality
+                audioQuality: video.contentDetails?.audioQuality,
+                width: this.extractDimension(video, 'width', video.contentDetails?.dimension),
+                height: this.extractDimension(video, 'height', video.contentDetails?.dimension)
             },
             regionRestriction: video.contentDetails?.regionRestriction
         };
+    }
+
+    private extractDimension(video: Video, type: 'width' | 'height', dimension?: string): number | undefined {
+        if (!dimension) return undefined;
+
+        // YouTube API returns dimension in format "2d" or "3d"
+        // For vertical videos, we can check thumbnail dimensions
+        const thumbnail = video?.snippet?.thumbnails?.maxres || 
+                         video?.snippet?.thumbnails?.high ||
+                         video?.snippet?.thumbnails?.default;
+
+        if (thumbnail) {
+            return type === 'width' ? thumbnail.width : thumbnail.height;
+        }
+
+        return undefined;
     }
 
     private formatChannelInfo(channel: Channel): ChannelInfo {
@@ -242,18 +336,20 @@ export class YouTubeService {
             height: thumb?.height || 0
         });
 
+        const thumbnails = {
+            default: formatThumbnail(channel.snippet.thumbnails.default),
+            medium: formatThumbnail(channel.snippet.thumbnails.medium),
+            high: formatThumbnail(channel.snippet.thumbnails.high),
+            maxres: channel.snippet.thumbnails.maxres ? formatThumbnail(channel.snippet.thumbnails.maxres) : undefined
+        };
+
         return {
             id: channel.id,
             title: channel.snippet.title || '',
             description: channel.snippet.description || '',
             subscriberCount: parseInt(channel.statistics?.subscriberCount || '0', 10),
             videoCount: parseInt(channel.statistics?.videoCount || '0', 10),
-            thumbnails: {
-                default: formatThumbnail(channel.snippet.thumbnails.default),
-                medium: formatThumbnail(channel.snippet.thumbnails.medium),
-                high: formatThumbnail(channel.snippet.thumbnails.high),
-                maxres: channel.snippet.thumbnails.maxres ? formatThumbnail(channel.snippet.thumbnails.maxres) : undefined
-            },
+            thumbnails,
             totalViews: parseInt(channel.statistics?.viewCount || '0', 10),
             createdAt: channel.snippet.publishedAt || new Date().toISOString(),
             recentUploads: []
@@ -261,16 +357,18 @@ export class YouTubeService {
     }
 
     private createEmptyVideoDetails(videoId: string): VideoDetails {
+        const thumbnails = {
+            default: { url: '', width: 120, height: 90 },
+            medium: { url: '', width: 320, height: 180 },
+            high: { url: '', width: 480, height: 360 }
+        };
+
         return {
             id: videoId,
             title: 'Unavailable Video',
             description: '',
             publishedAt: new Date().toISOString(),
-            thumbnails: {
-                default: { url: '', width: 120, height: 90 },
-                medium: { url: '', width: 320, height: 180 },
-                high: { url: '', width: 480, height: 360 }
-            },
+            thumbnails,
             channelId: '',
             channelTitle: 'Unknown Channel',
             duration: 'PT0S',
@@ -285,5 +383,61 @@ export class YouTubeService {
                 audioQuality: undefined
             }
         };
+    }
+
+    private getDurationParameter(preference?: 'short' | 'medium' | 'long'): string {
+        switch (preference) {
+            case 'short':
+                return 'short'; // API: < 4 minutes
+            case 'medium':
+                return 'medium'; // API: 4-20 minutes
+            case 'long':
+                return 'long'; // API: > 20 minutes
+            default:
+                return 'any';
+        }
+    }
+
+    private isShortFormContent(title: string, description: string): boolean {
+        const shortsIndicators = [
+            '#shorts',
+            '#short',
+            '#youtubeshorts',
+            '#shortsvideo',
+            '#shortvideo',
+            '#shortsfeed',
+            '#shortsviral',
+            '#shortsyoutube',
+            '#ytshorts',
+            '#shortschannel'
+        ];
+
+        const lowerTitle = title.toLowerCase();
+        const lowerDesc = description.toLowerCase();
+
+        // Check for shorts hashtags
+        return shortsIndicators.some(indicator => 
+            lowerTitle.includes(indicator) || lowerDesc.includes(indicator)
+        );
+    }
+
+    private isVerticalVideo(video: Video): boolean {
+        // Check video dimensions if available
+        if (video.contentDetails?.height && video.contentDetails?.width) {
+            const aspectRatio = video.contentDetails.width / video.contentDetails.height;
+            return aspectRatio < 1; // Vertical video
+        }
+
+        // Check thumbnail dimensions as fallback
+        const thumbnail = video.snippet?.thumbnails?.maxres || 
+                         video.snippet?.thumbnails?.high ||
+                         video.snippet?.thumbnails?.default;
+
+        if (thumbnail?.width && thumbnail?.height) {
+            const aspectRatio = thumbnail.width / thumbnail.height;
+            return aspectRatio < 1; // Vertical video
+        }
+
+        return false; // Default to false if we can't determine
     }
 }

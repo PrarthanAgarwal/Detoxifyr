@@ -1,10 +1,10 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { VideoMetadata, SessionHistory } from '../types';
-import { ChannelInfo } from '../types/youtube';
+import { ChannelInfo, UserPreferences, QualityWeights } from '../types/quality';
 import { YouTubeService } from '../services/youtubeService';
-import { FilteringEngine } from '../services/filteringEngine';
-import { RootState } from './index';
-import { convertToVideoMetadata } from '../utils/videoUtils';
+import { SimplifiedFilteringEngine } from '../services/filtering/SimplifiedFilteringEngine';
+import { RootState, AppDispatch } from './index';
+import { convertToVideoMetadata, convertQualityToYouTubeVideoDetails, convertChannelMap } from '../utils/videoUtils';
 
 interface SessionState {
     isActive: boolean;
@@ -22,15 +22,32 @@ const initialState: SessionState = {
     error: null
 };
 
+// Load history from storage
+export const loadHistory = createAsyncThunk(
+    'session/loadHistory',
+    async () => {
+        return new Promise<SessionHistory[]>((resolve) => {
+            chrome.storage.local.get(['sessionHistory'], (result) => {
+                resolve(result.sessionHistory || []);
+            });
+        });
+    }
+);
+
+// Save history to storage
+const saveHistoryToStorage = async (history: SessionHistory[]) => {
+    await chrome.storage.local.set({ sessionHistory: history });
+};
+
 export const startSession = createAsyncThunk<
     VideoMetadata[],
     void,
-    { state: RootState; rejectValue: string }
+    { state: RootState; rejectValue: string; dispatch: AppDispatch }
 >(
     'session/start',
-    async (_, { getState, rejectWithValue }) => {
+    async (_, { getState, rejectWithValue, dispatch }) => {
         const youtubeService = YouTubeService.getInstance();
-        const filteringEngine = FilteringEngine.getInstance();
+        const filteringEngine = SimplifiedFilteringEngine.getInstance();
         const state = getState();
         const preferences = state.preferences;
 
@@ -84,45 +101,71 @@ export const startSession = createAsyncThunk<
             }
 
             // Apply filtering with preferences
+            const qualityWeights: QualityWeights = {
+                engagement: 0.2,
+                authority: 0.2,
+                quality: 0.2,
+                freshness: 0.2,
+                relevancy: 0.2
+            };
+
+            const filterPreferences: UserPreferences = {
+                minEngagementScore: 0.2,
+                minAuthorityScore: 0.2,
+                minQualityScore: 0.2,
+                maxContentAge: preferences.ageLimit || 365,
+                minRelevancyScore: 0.3,
+                minViewCount: Math.max(100, preferences.viewCountThreshold),
+                minDuration: preferences.contentLength.min * 60,
+                maxDuration: preferences.contentLength.max * 60,
+                numberOfVideos: preferences.numberOfVideos,
+                videoLength: preferences.averageVideoLength,
+                contentAge: preferences.contentAge,
+                weights: qualityWeights
+            };
+
             const filteredResults = await filteringEngine.filterAndRankContent(
-                searchResponse.items,
-                channelMap,
-                {
-                    minEngagementScore: 0.2,
-                    minAuthorityScore: 0.2,
-                    minQualityScore: 0.2,
-                    maxContentAge: preferences.ageLimit,
-                    minRelevancyScore: 0.3,
-                    minViewCount: Math.max(100, preferences.viewCountThreshold),
-                    minDuration: preferences.contentLength.min * 60,
-                    maxDuration: preferences.contentLength.max * 60,
-                    numberOfVideos: preferences.numberOfVideos,
-                    weights: {
-                        engagement: 0.2,
-                        authority: 0.2,
-                        quality: 0.2,
-                        freshness: 0.2,
-                        relevancy: 0.2
-                    }
-                },
+                searchResponse.items.map(convertQualityToYouTubeVideoDetails),
+                convertChannelMap(channelMap),
+                filterPreferences,
                 validKeywords.join(' ')
             );
 
             if (!filteredResults?.videos?.length) {
+                console.log('No videos passed filtering');
                 return rejectWithValue('No videos met the quality criteria. Try adjusting your preferences or using different keywords.');
             }
 
             console.log(`${filteredResults.videos.length} videos passed filtering`);
 
-            // Convert to metadata
+            // Convert to metadata and ensure we have results
             const results = filteredResults.videos
                 .slice(0, preferences.numberOfVideos)
-                .map(video => convertToVideoMetadata(video));
+                .map(video => convertToVideoMetadata(video))
+                .filter(video => video !== null);  // Filter out any failed conversions
 
             if (!results.length) {
+                console.log('Failed to convert videos to metadata');
                 return rejectWithValue('Failed to process video results');
             }
 
+            console.log(`Returning ${results.length} videos to display`);
+            
+            // Create a new session history entry
+            const sessionHistory: SessionHistory = {
+                sessionId: Date.now().toString(),
+                date: new Date().toISOString(),
+                keywords: validKeywords,
+                totalVideos: results.length,
+                contentLength: Number(preferences.averageVideoLength) || 0,
+                videosWatched: results
+            };
+
+            // Add to history using dispatch and save to storage
+            dispatch(addToHistory(sessionHistory));
+            const updatedHistory = [...getState().session.history, sessionHistory];
+            await saveHistoryToStorage(updatedHistory);
+            
             return results;
 
         } catch (error) {
@@ -171,6 +214,8 @@ const sessionSlice = createSlice({
         },
         clearHistory: (state) => {
             state.history = [];
+            // Clear storage when history is cleared
+            chrome.storage.local.remove(['sessionHistory']);
         }
     },
     extraReducers: (builder) => {
@@ -183,10 +228,16 @@ const sessionSlice = createSlice({
                 state.loading = false;
                 state.isActive = true;
                 state.currentVideos = action.payload;
+                state.error = null;
+                console.log(`Updated state with ${action.payload.length} videos`);
             })
             .addCase(startSession.rejected, (state, action) => {
                 state.loading = false;
-                state.error = action.error.message || 'Failed to start session';
+                state.error = action.payload as string || 'Failed to start session';
+                console.log('Session rejected:', action.payload);
+            })
+            .addCase(loadHistory.fulfilled, (state, action) => {
+                state.history = action.payload;
             });
     }
 });
@@ -199,7 +250,6 @@ export const {
 } = sessionSlice.actions;
 
 export default sessionSlice.reducer;
-
 // Selectors
 export const selectCurrentVideos = (state: RootState) => state.session.currentVideos;
 export const selectSessionHistory = (state: RootState) => state.session.history;

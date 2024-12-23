@@ -4,56 +4,65 @@ export interface ThumbnailInfo {
     height: number;
 }
 
+export interface Thumbnails {
+    default: ThumbnailInfo;
+    medium: ThumbnailInfo;
+    high: ThumbnailInfo;
+    standard?: ThumbnailInfo;
+    maxres?: ThumbnailInfo;
+}
+
+export interface VideoStatistics {
+    viewCount: number;
+    likeCount: number;
+    commentCount: number;
+}
+
+export interface VideoContentDetails {
+    duration: string;
+    dimension: string;
+    definition: string;
+    caption: boolean;
+    licensedContent: boolean;
+    projection: string;
+}
+
 export interface VideoDetails {
     id: string;
     title: string;
     description: string;
-    publishedAt: string;
-    thumbnails: {
-        default: ThumbnailInfo;
-        medium: ThumbnailInfo;
-        high: ThumbnailInfo;
-        maxres?: ThumbnailInfo;
-    };
+    publishedAt: Date;
+    thumbnails: Thumbnails;
     channelId: string;
     channelTitle: string;
-    duration: string;
-    viewCount: number;
-    likeCount: number;
-    commentCount: number;
+    tags: string[];
+    statistics: VideoStatistics;
+    contentDetails: VideoContentDetails;
+    viewCount?: number;
+    likeCount?: number;
+    commentCount?: number;
+    duration?: string;
     defaultLanguage?: string;
-    tags?: string[];
-    categoryId?: string;
     hasCaptions?: boolean;
-    contentDetails?: {
-        audioQuality?: string;
-    };
-    regionRestriction?: {
-        allowed?: string[];
-        blocked?: string[];
-    };
+}
+
+export interface ChannelStatistics {
+    viewCount: number;
+    subscriberCount: number;
+    videoCount: number;
 }
 
 export interface ChannelInfo {
     id: string;
     title: string;
     description: string;
-    subscriberCount: number;
-    videoCount: number;
-    thumbnails: {
-        default: ThumbnailInfo;
-        medium: ThumbnailInfo;
-        high: ThumbnailInfo;
-        maxres?: ThumbnailInfo;
-    };
-    totalViews: number;
-    createdAt: string;
-    recentUploads: { publishedAt: string }[];
-}
-
-export interface SearchResponse {
-    items: VideoDetails[];
-    nextPageToken?: string;
-    prevPageToken?: string;
-    totalResults: number;
+    customUrl?: string;
+    thumbnails: Thumbnails;
+    statistics: ChannelStatistics;
+    publishedAt: Date;
+    subscriberCount?: number;
+    videoCount?: number;
+    totalViews?: number;
+    createdAt?: string;
+    recentUploads?: { publishedAt: string }[];
 }

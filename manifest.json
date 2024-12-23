@@ -32,8 +32,7 @@
   "oauth2": {
     "client_id": "84661743876-qu25ljp5l5iv9n42g49evgi42mehc7b9.apps.googleusercontent.com",
     "scopes": [
-      "https://www.googleapis.com/auth/youtube.readonly",
-      "https://www.googleapis.com/auth/youtube.force-ssl"
+      "https://www.googleapis.com/auth/youtube.readonly"
     ]
   }
 }

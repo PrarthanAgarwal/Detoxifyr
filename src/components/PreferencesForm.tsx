@@ -7,27 +7,9 @@ import { setPreferences, addKeyword, removeKeyword } from '../store/preferencesS
 import { startSession, setCurrentVideos } from '../store/sessionSlice';
 import { AppDispatch } from '../store';
 import { YouTubeService } from '../services/youtubeService';
-import { FilteringEngine } from '../services/filteringEngine';
-import { convertToVideoMetadata } from '../utils/videoUtils';
-import { VideoDetails } from '../types/youtube';
-import { VideoLength } from '../types';
-
-interface YouTubeSearchResponse {
-  items: Array<{
-    id: {
-      videoId: string;
-    };
-    snippet: {
-      title: string;
-      description: string;
-      thumbnails: {
-        default: { url: string };
-        medium: { url: string };
-        high: { url: string };
-      };
-    };
-  }>;
-}
+import { SimplifiedFilteringEngine } from '../services/filtering/SimplifiedFilteringEngine';
+import { VideoLength, VideoMetadata } from '../types';
+import { KeywordProcessor } from '../services/keyword/KeywordProcessor';
 
 const PreferencesForm: React.FC = () => {
   const dispatch = useDispatch<AppDispatch>();
@@ -49,108 +31,104 @@ const PreferencesForm: React.FC = () => {
       dispatch(startSession());
       
       const youtubeService = YouTubeService.getInstance();
-      const filteringEngine = FilteringEngine.getInstance();
+      const filteringEngine = SimplifiedFilteringEngine.getInstance();
       
-      const allVideoDetails: VideoDetails[] = [];
-      const channelInfoMap = new Map();
+      const keywordProcessor = KeywordProcessor.getInstance();
+      const processedKeywords = keywordProcessor.process(preferences.keywords);
+      if (processedKeywords.errors.length > 0) {
+        setError(processedKeywords.errors[0]);
+        return;
+      }
+      const optimizedKeywords = keywordProcessor.optimize(processedKeywords);
       
       // Combine keywords for a single search
-      const combinedQuery = preferences.keywords.join(' ');
+      const combinedQuery = optimizedKeywords.optimizedKeywords.join(' ');
       
       try {
         const searchResponse = await youtubeService.searchVideos({
           query: combinedQuery,
-          maxResults: preferences.numberOfVideos * 2
+          maxResults: preferences.numberOfVideos * 2,
+          preferences: {
+            videoLength: preferences.averageVideoLength,
+            contentAge: preferences.contentAge,
+            minEngagementScore: 0.5,
+            minAuthorityScore: 0.5,
+            minQualityScore: 0.5,
+            maxContentAge: 365,
+            minRelevancyScore: 0.5,
+            minViewCount: 1000,
+            minDuration: 60,
+            maxDuration: 3600,
+            numberOfVideos: preferences.numberOfVideos,
+            weights: {
+              engagement: 0.2,
+              authority: 0.2,
+              quality: 0.2,
+              freshness: 0.2,
+              relevancy: 0.2
+            }
+          }
         });
-        
-        const response = searchResponse as unknown as YouTubeSearchResponse;
-        const videoIds = response.items
-          .filter(item => item.id && item.id.videoId)
-          .map(item => item.id.videoId);
-        
-        if (videoIds.length === 0) {
-          throw new Error('No valid videos found for the search query');
+
+        if (!searchResponse?.items?.length) {
+          throw new Error('No videos found for the given search criteria');
         }
-        
-        // Fetch video details with error handling
-        for (const id of videoIds) {
-          try {
-            const videoDetail = await youtubeService.getVideoDetails(id);
-            if (videoDetail && videoDetail.channelId) {
-              allVideoDetails.push(videoDetail);
+
+        // Filter and rank the videos
+        const filteredResults = await filteringEngine.filterAndRankContent(
+          searchResponse.items,
+          searchResponse.channels,
+          {
+            minEngagementScore: 0.5,
+            minAuthorityScore: 0.5,
+            minQualityScore: 0.5,
+            maxContentAge: 365,
+            minRelevancyScore: 0.5,
+            minViewCount: 1000,
+            minDuration: 60,
+            maxDuration: 3600,
+            numberOfVideos: preferences.numberOfVideos,
+            videoLength: preferences.averageVideoLength,
+            contentAge: preferences.contentAge,
+            weights: {
+              engagement: 0.2,
+              authority: 0.2,
+              quality: 0.2,
+              freshness: 0.2,
+              relevancy: 0.2
             }
-          } catch (error) {
-            console.warn(`Failed to fetch details for video ${id}:`, error);
           }
+        );
+
+        // Convert filtered videos to VideoMetadata format
+        const videoMetadata: VideoMetadata[] = filteredResults.videos
+          .slice(0, preferences.numberOfVideos)
+          .map(video => ({
+            videoId: video.id,
+            title: video.title,
+            thumbnailUrl: video.thumbnails.high.url,
+            channelId: video.channelId,
+            channelTitle: video.channelTitle,
+            publishDate: video.publishedAt,
+            viewCount: video.viewCount,
+            likeCount: video.likeCount,
+            dislikeCount: 0,
+            commentCount: video.commentCount,
+            duration: parseInt(video.duration.replace(/\D/g, '')),
+            creatorAuthorityScore: 0,
+            contentQualityScore: 0,
+            engagementRatio: 0
+          }));
+
+        if (videoMetadata.length === 0) {
+          throw new Error('No videos passed the quality filters. Please try different keywords.');
         }
-        
-        // Collect unique channel IDs from valid video details
-        const channelIds = new Set(allVideoDetails.map(video => video.channelId).filter(Boolean));
-        
-        // Fetch channel info with error handling
-        for (const channelId of channelIds) {
-          try {
-            const channelInfo = await youtubeService.getChannelInfo(channelId);
-            if (channelInfo) {
-              channelInfoMap.set(channelId, channelInfo);
-            }
-          } catch (error) {
-            console.warn(`Failed to fetch channel info for ${channelId}:`, error);
-          }
-        }
+
+        dispatch(setCurrentVideos(videoMetadata));
+        navigate('/videos');
       } catch (error) {
-        console.error('Search failed:', error);
-        throw new Error('Failed to search for videos. Please try again.');
+        setError(error instanceof Error ? error.message : 'An error occurred');
       }
-      
-      if (allVideoDetails.length === 0) {
-        throw new Error('No valid videos found. Please try different keywords.');
-      }
-
-      // Filter only videos with complete channel info
-      const videosWithChannelInfo = allVideoDetails.filter(
-        video => video.channelId && channelInfoMap.has(video.channelId)
-      );
-
-      if (videosWithChannelInfo.length === 0) {
-        throw new Error('No videos with complete information found. Please try again.');
-      }
-
-      // Apply filtering and ranking
-      const filteredResults = await filteringEngine.filterAndRankContent(
-        videosWithChannelInfo,
-        channelInfoMap,
-        {
-          minEngagementScore: 0.5,
-          minAuthorityScore: 0.5,
-          minQualityScore: 0.5,
-          maxContentAge: 365,
-          minRelevancyScore: 0.5,
-          minViewCount: 1000,
-          minDuration: 60,
-          maxDuration: 3600,
-          numberOfVideos: preferences.numberOfVideos,
-          weights: {
-            engagement: 0.2,
-            authority: 0.2,
-            quality: 0.2,
-            freshness: 0.2,
-            relevancy: 0.2
-          }
-        }
-      );
-
-      // Convert filtered videos to metadata
-      const videoMetadata = filteredResults.videos
-        .slice(0, preferences.numberOfVideos)
-        .map(video => convertToVideoMetadata(video));
-
-      if (videoMetadata.length === 0) {
-        throw new Error('No videos passed the quality filters. Please try different keywords.');
-      }
-
-      dispatch(setCurrentVideos(videoMetadata));
-      navigate('/videos');
     } catch (error) {
       setError(error instanceof Error ? error.message : 'An error occurred');
     }
@@ -243,6 +221,32 @@ const PreferencesForm: React.FC = () => {
                 <span className="text-gray-700">{option.label}</span>
               </label>
             ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Content Age
+          </label>
+          <div className="space-y-2">
+            <label className="flex items-center space-x-3 cursor-pointer">
+              <input
+                type="radio"
+                checked={preferences.contentAge === 'recent'}
+                onChange={() => dispatch(setPreferences({ contentAge: 'recent' }))}
+                className="form-radio h-4 w-4 text-indigo-600"
+              />
+              <span className="text-gray-700">Prioritize newer content (within last year)</span>
+            </label>
+            <label className="flex items-center space-x-3 cursor-pointer">
+              <input
+                type="radio"
+                checked={preferences.contentAge === 'all'}
+                onChange={() => dispatch(setPreferences({ contentAge: 'all' }))}
+                className="form-radio h-4 w-4 text-indigo-600"
+              />
+              <span className="text-gray-700">Show all time periods</span>
+            </label>
           </div>
         </div>
 

@@ -31,20 +31,22 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    "types": ["node", "jest", "chrome"]
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
     "src/**/*.d.ts",
     "src/env.d.ts"
-  ],
+, "noteables/archive/SessionHistory.tsx"  ],
   "exclude": [
     "node_modules",
     "dist",
     "build",
     "coverage",
-    "vite.config.ts"
+    "vite.config.ts",
+    "noteables/**/*"
   ],
   "references": [
     { "path": "./tsconfig.node.json" }

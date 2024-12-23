@@ -1,11 +1,11 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { YouTubeAuthService } from '../auth/youtubeAuth';
 import { YouTubeApiError } from '../../types/api.types';
+import { YouTubeConfig } from '../../config/youtube.config';
 import { 
     YouTubeSearchResponse, 
     YouTubeVideoResponse, 
-    YouTubeChannelResponse,
-    SearchOptions
+    YouTubeChannelResponse
 } from '../../types/youtube.types';
 
 interface QuotaCost {
@@ -19,10 +19,11 @@ export class YouTubeApiService {
     private static instance: YouTubeApiService;
     private axiosInstance: AxiosInstance;
     private authService: YouTubeAuthService;
-    private dailyQuotaLimit: number = 10000;
+    private dailyQuotaLimit: number = YouTubeConfig.dailyQuotaLimit;
     private quotaUsed: number = 0;
     private retryAttempts: number = 3;
     private retryDelay: number = 1000;
+    private apiKey: string = YouTubeConfig.apiKey;
     
     private quotaCosts: QuotaCost = {
         search: 100,
@@ -33,8 +34,8 @@ export class YouTubeApiService {
     private constructor() {
         this.authService = YouTubeAuthService.getInstance();
         this.axiosInstance = axios.create({
-            baseURL: 'https://www.googleapis.com/youtube/v3',
-            timeout: 10000
+            baseURL: YouTubeConfig.baseUrl,
+            timeout: YouTubeConfig.timeout
         });
         
         this.setupInterceptors();
@@ -48,27 +49,46 @@ export class YouTubeApiService {
         return YouTubeApiService.instance;
     }
 
-    private async retryOperation<T>(operation: () => Promise<T>): Promise<T> {
+    private async retryOperation<T>(operation: () => Promise<T>, skipErrorCodes: string[] = []): Promise<T> {
         let lastError: Error | null = null;
+        
         for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
             try {
                 return await operation();
             } catch (error) {
                 lastError = error as Error;
-                if (this.isQuotaExceeded(error) || attempt === this.retryAttempts) {
+                const statusCode = (error as AxiosError)?.response?.status?.toString();
+
+                // Don't retry if error code is in skipErrorCodes or it's a quota exceeded error
+                if (
+                    this.isQuotaExceeded(error) || 
+                    attempt === this.retryAttempts ||
+                    (statusCode && skipErrorCodes.includes(statusCode))
+                ) {
                     throw error;
                 }
-                await new Promise(resolve => setTimeout(resolve, this.retryDelay * attempt));
+
+                // Exponential backoff
+                const delay = this.retryDelay * Math.pow(2, attempt - 1);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
+        
         throw lastError;
     }
 
     private setupInterceptors(): void {
         this.axiosInstance.interceptors.request.use(
             async (config) => {
-                const token = await this.authService.getValidToken();
-                config.headers.Authorization = `Bearer ${token}`;
+                if (!config.params) {
+                    config.params = {};
+                }
+                config.params.key = this.apiKey;
+
+                if (this.requiresAuth(config.url || '')) {
+                    const token = await this.authService.getValidToken();
+                    config.headers.Authorization = `Bearer ${token}`;
+                }
                 
                 const endpoint = this.getEndpointFromUrl(config.url || '');
                 if (!this.hasQuotaAvailable(endpoint)) {
@@ -94,44 +114,61 @@ export class YouTubeApiService {
         );
     }
 
+    private requiresAuth(url: string): boolean {
+        const authEndpoints = [
+            '/commentThreads',
+            '/subscriptions',
+            '/playlistItems'
+        ];
+        return authEndpoints.some(endpoint => url.includes(endpoint));
+    }
+
     public async searchVideos(
-        query: string, 
-        options: Partial<SearchOptions> = {}
+        params: {
+            query: string;
+            videoDuration?: string;
+            videoEmbeddable?: boolean;
+            type?: string;
+            part?: string[];
+            maxResults?: number;
+            safeSearch?: 'none' | 'moderate' | 'strict';
+            order?: 'date' | 'rating' | 'relevance' | 'title' | 'viewCount';
+            regionCode?: string;
+            relevanceLanguage?: string;
+        }
     ): Promise<YouTubeSearchResponse> {
         const {
+            query,
+            videoDuration = 'any',
+            videoEmbeddable = true,
+            type = 'video',
+            part = ['snippet', 'id'],
             maxResults = 25,
             safeSearch = 'moderate',
             order = 'relevance',
-            pageToken,
             regionCode,
-            relevanceLanguage,
-            publishedAfter,
-            publishedBefore,
-            videoCategoryId,
-            videoDefinition,
-            videoDuration,
-            videoType
-        } = options;
+            relevanceLanguage
+        } = params;
+
+        // Validate and sanitize parts
+        const validParts = this.validateSearchParts(part);
+        const fields = this.buildSearchFields(validParts);
 
         return this.retryOperation(async () => {
             const response = await this.axiosInstance.get<YouTubeSearchResponse>('/search', {
                 params: {
-                    part: 'snippet',
                     q: query,
+                    part: validParts.join(','),
                     maxResults,
-                    type: 'video',
+                    type,
                     safeSearch,
-                    videoEmbeddable: true,
+                    videoEmbeddable,
+                    videoDuration,
                     order,
-                    ...(pageToken && { pageToken }),
+                    videoDefinition: 'high',
+                    fields,
                     ...(regionCode && { regionCode }),
-                    ...(relevanceLanguage && { relevanceLanguage }),
-                    ...(publishedAfter && { publishedAfter: publishedAfter.toISOString() }),
-                    ...(publishedBefore && { publishedBefore: publishedBefore.toISOString() }),
-                    ...(videoCategoryId && { videoCategoryId }),
-                    ...(videoDefinition && { videoDefinition }),
-                    ...(videoDuration && { videoDuration }),
-                    ...(videoType && { videoType })
+                    ...(relevanceLanguage && { relevanceLanguage })
                 }
             });
 
@@ -147,7 +184,37 @@ export class YouTubeApiService {
             }
 
             return response.data;
-        });
+        }, ['400']); // Don't retry on 400 Bad Request errors
+    }
+
+    private validateSearchParts(parts: string[]): string[] {
+        const validSearchParts = ['snippet', 'id'];
+        return parts.filter(part => validSearchParts.includes(part));
+    }
+
+    private buildSearchFields(parts: string[]): string {
+        const fieldMappings: { [key: string]: string[] } = {
+            snippet: [
+                'title',
+                'description',
+                'publishedAt',
+                'thumbnails',
+                'channelId',
+                'channelTitle'
+            ],
+            id: ['kind', 'videoId']
+        };
+
+        const selectedFields = parts.map(part => {
+            const fields = fieldMappings[part];
+            return fields ? part : null;
+        }).filter(Boolean);
+
+        if (selectedFields.includes('id')) {
+            return 'items(id/videoId,snippet),nextPageToken,prevPageToken,pageInfo';
+        }
+        
+        return 'items(snippet),nextPageToken,prevPageToken,pageInfo';
     }
 
     public async getVideoDetails(videoIds: string | string[]): Promise<YouTubeVideoResponse> {
@@ -156,9 +223,10 @@ export class YouTubeApiService {
         return this.retryOperation(async () => {
             const response = await this.axiosInstance.get<YouTubeVideoResponse>('/videos', {
                 params: {
-                    part: 'snippet,contentDetails,statistics,status,topicDetails',
+                    part: 'snippet,contentDetails,statistics,status',
                     id: ids,
-                    maxResults: 50
+                    maxResults: 50,
+                    fields: 'items(id,snippet,contentDetails,statistics,status),pageInfo'
                 }
             });
             
@@ -267,19 +335,20 @@ export class YouTubeApiService {
             const errorData = error.response.data?.error;
             const errorMessage = errorData?.message || 'Unknown error';
             const errorReason = errorData?.errors?.[0]?.reason;
+            const errorDetails = this.formatErrorDetails(errorData);
             
             switch (error.response.status) {
                 case 400:
-                    throw new Error(`Invalid request: ${errorMessage}`);
+                    throw new Error(`Invalid request: ${errorMessage}${errorDetails}`);
                 case 401:
-                    throw new Error(`Authentication failed: ${errorMessage}`);
+                    throw new Error(`Authentication failed: ${errorMessage}${errorDetails}`);
                 case 403:
                     if (errorReason === 'quotaExceeded') {
                         throw new Error('YouTube API quota exceeded. Please try again later.');
                     }
-                    throw new Error(`Access forbidden: ${errorMessage}`);
+                    throw new Error(`Access forbidden: ${errorMessage}${errorDetails}`);
                 case 404:
-                    throw new Error(`Resource not found: ${errorMessage}`);
+                    throw new Error(`Resource not found: ${errorMessage}${errorDetails}`);
                 case 429:
                     throw new Error(`Rate limit exceeded. Please try again later: ${errorMessage}`);
                 case 500:
@@ -295,6 +364,19 @@ export class YouTubeApiService {
         }
         
         throw new Error(`Error setting up request: ${error.message}`);
+    }
+
+    private formatErrorDetails(errorData: any): string {
+        if (!errorData?.errors?.length) return '';
+
+        const details = errorData.errors.map((err: any) => {
+            if (err.location) {
+                return ` (${err.location}: ${err.message})`;
+            }
+            return ` (${err.message})`;
+        }).join('');
+
+        return details;
     }
 
     private isQuotaExceeded(error: any): boolean {

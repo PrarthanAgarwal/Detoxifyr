@@ -47,7 +47,11 @@ const VideoList: React.FC = () => {
 	}, [hasMoreVideos]);
 
 	const renderVideo = (video: VideoMetadata) => (
-		<div key={video.videoId} className="mb-4 p-4 border rounded-lg shadow-sm hover:shadow-md transition-shadow">
+		<div 
+			key={video.videoId} 
+			className="mb-4 p-4 border rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+			onClick={() => window.open(`https://youtube.com/watch?v=${video.videoId}`, '_blank')}
+		>
 			{!isOnline ? (
 				<div className="aspect-video bg-gray-100 flex items-center justify-center rounded-lg">
 					<p className="text-gray-500">Thumbnail unavailable offline</p>

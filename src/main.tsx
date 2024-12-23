@@ -4,8 +4,8 @@ import App from './App'
 import './index.css'
 
 function validateEnv() {
-    const required = ['VITE_YOUTUBE_CLIENT_ID', 'VITE_YOUTUBE_API_KEY'];
-    const missing = required.filter(key => !import.meta.env[key]);
+    const required = ['VITE_YOUTUBE_CLIENT_ID', 'VITE_YOUTUBE_API_KEY', 'VITE_OPENAI_API_KEY'];
+    const missing = required.filter(key => !(key in import.meta.env));
     
     if (missing.length > 0) {
         throw new Error(`Missing required environment variables: ${missing.join(', ')}`);

@@ -58,6 +58,8 @@ export interface ContentDetails {
     caption: string;
     licensedContent: boolean;
     audioQuality?: string;
+    width?: number;
+    height?: number;
     regionRestriction?: {
         allowed?: string[];
         blocked?: string[];

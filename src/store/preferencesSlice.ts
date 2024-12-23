@@ -1,18 +1,19 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { UserPreferences, VideoLength } from '../types';
+import { UserPreferences, VideoLength, ContentAge } from '../types';
 
 const initialState: UserPreferences = {
   keywords: [],
   averageVideoLength: 'medium' as VideoLength,
   numberOfVideos: 5,
   languagePreferences: ['en'],
+  contentAge: 'recent' as ContentAge,
   contentLength: {
-    min: 5,
+    min: 4,
     max: 20,
   },
   viewCountThreshold: 1000,
   engagementRatioThreshold: 0.8,
-  ageLimit: 365,
+  ageLimit: null,
 };
 
 const preferencesSlice = createSlice({
